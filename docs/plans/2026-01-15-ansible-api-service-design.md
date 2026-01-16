@@ -18,8 +18,8 @@ An API service that exposes endpoints for other components to run Ansible playbo
 | API authentication | API keys |
 | Inventory | Combination (caller-provided, dynamic, pre-configured) |
 | Credentials | Combination (centralized, vault, caller-provided) |
-| Technology stack | Python + FastAPI + ansible-runner + Celery |
-| Message broker | Redis |
+| Technology stack | Python + FastAPI + ansible-runner + rq (Redis Queue) |
+| Message broker | Redis (rq for MVP, Celery-ready abstraction) |
 | Database | MariaDB |
 | Log storage | Object Storage (S3/MinIO) |
 | Deployment | Kubernetes |
@@ -29,16 +29,19 @@ An API service that exposes endpoints for other components to run Ansible playbo
 
 ## High-Level Architecture
 
+> **Design Note:** This architecture uses `rq` (Redis Queue) for the MVP to minimize complexity.
+> The queue interface is abstracted to allow migration to Celery when scale demands it.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Clients                               │
 │         (CI/CD pipelines, microservices, etc.)              │
 └──────────┬─────────────────────────────────────┬────────────┘
-           │ HTTPS + API Key                     │ SSE/WebSocket
+           │ HTTPS + API Key                     │ SSE
            ▼                                     │ (live streaming)
 ┌─────────────────────────────────────────────────────────────┐
 │                      API Layer                               │
-│    FastAPI servers (stateless, horizontally scalable)       │
+│              FastAPI (2-3 replicas for MVP)                 │
 │    - Request validation & authentication                    │
 │    - Job submission & status queries                         │
 │    - Log streaming endpoints (SSE)                          │
@@ -49,15 +52,15 @@ An API service that exposes endpoints for other components to run Ansible playbo
         ▼                 ▼                 ▼
 ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
 │    Redis     │  │   MariaDB    │  │  Object Storage  │
-│ - Task queue │  │ - Job records│  │  (S3/MinIO)      │
+│ - rq queue   │  │ - Job records│  │  (S3/MinIO)      │
 │ - Live events│  │ - API keys   │  │ - Full exec logs │
 │ - Pub/sub    │  │ - Credentials│  │ - Artifacts      │
 └──────────────┘  └──────────────┘  └──────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    Worker Layer                              │
-│      Celery workers (scaled via K8s HPA)                    │
+│                    rq Workers                                │
+│              (2-5 replicas for MVP)                         │
 │      - Pull playbooks from Git                              │
 │      - Execute via ansible-runner                           │
 │      - Publish events to Redis (real-time)                  │
@@ -87,6 +90,83 @@ An API service that exposes endpoints for other components to run Ansible playbo
 1. **Polling** - `GET /jobs/{id}` returns current status, summary, log URL
 2. **Server-Sent Events (SSE)** - `GET /jobs/{id}/stream` for real-time events as playbook runs
 3. **Webhook callback** - POST to client-specified URL on completion with results
+
+### Migration-Friendly Queue Abstraction
+
+The queue interface is abstracted to allow swapping `rq` for Celery without changing application code:
+
+```python
+# app/queue/interface.py - Abstract interface
+from abc import ABC, abstractmethod
+from typing import Any
+
+class JobQueue(ABC):
+    @abstractmethod
+    def enqueue(self, job_type: str, payload: dict) -> str:
+        """Submit job, return job_id"""
+        pass
+
+    @abstractmethod
+    def get_status(self, job_id: str) -> dict:
+        """Get job status from queue"""
+        pass
+
+    @abstractmethod
+    def cancel(self, job_id: str) -> bool:
+        """Cancel a queued/running job"""
+        pass
+
+
+# app/queue/rq_backend.py - MVP implementation
+from rq import Queue
+from redis import Redis
+
+class RQJobQueue(JobQueue):
+    def __init__(self, redis_url: str):
+        self.redis = Redis.from_url(redis_url)
+        self.queue = Queue(connection=self.redis)
+
+    def enqueue(self, job_type: str, payload: dict) -> str:
+        job = self.queue.enqueue(
+            f"app.workers.{job_type}",
+            payload,
+            job_timeout="1h"
+        )
+        return job.id
+
+    def get_status(self, job_id: str) -> dict:
+        job = Job.fetch(job_id, connection=self.redis)
+        return {"status": job.get_status(), "result": job.result}
+
+    def cancel(self, job_id: str) -> bool:
+        job = Job.fetch(job_id, connection=self.redis)
+        job.cancel()
+        return True
+
+
+# app/queue/celery_backend.py - Future implementation (when scale demands)
+class CeleryJobQueue(JobQueue):
+    """Swap in when you need Celery's features:
+    - Task routing to different queues
+    - Task priorities
+    - Advanced retry policies
+    - Canvas workflows (chains, groups, chords)
+    """
+    pass
+
+
+# Dependency injection in FastAPI
+def get_queue() -> JobQueue:
+    if settings.QUEUE_BACKEND == "celery":
+        return CeleryJobQueue(settings.CELERY_BROKER_URL)
+    return RQJobQueue(settings.REDIS_URL)
+```
+
+**Migration path to Celery:**
+1. Implement `CeleryJobQueue` class
+2. Change config: `QUEUE_BACKEND=celery`
+3. Deploy Celery workers instead of rq workers
+4. No API changes needed
 
 ---
 
@@ -362,6 +442,11 @@ The following sections need to be designed:
 - [ ] Security Considerations
 - [ ] API Rate Limiting
 
+Completed:
+- [x] High-Level Architecture
+- [x] API Design (endpoints, request/response schemas)
+- [x] Queue Abstraction (rq MVP with Celery migration path)
+
 ---
 
 ## Open Questions
@@ -378,3 +463,4 @@ The following sections need to be designed:
 | Date | Author | Changes |
 |------|--------|---------|
 | 2026-01-15 | - | Initial draft |
+| 2026-01-15 | - | Simplified to rq-based architecture with Celery migration path |
