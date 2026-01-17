@@ -264,6 +264,65 @@ GET    /metrics                        # Prometheus metrics
 }
 ```
 
+#### Option E: Playbook from Nexus (bundled artifact)
+
+For environments where workers can't access Git directly (e.g., prod workers accessing dev Git).
+CI/CD packages playbooks into .tgz and uploads to Nexus.
+
+```json
+"source": {
+  "type": "nexus",
+  "repository": "ansible-playbooks",
+  "artifact": "app-deploy",
+  "version": "1.2.0",
+  "path": "deploy/webserver.yml",
+  "nexus_credential": "nexus-prod"
+}
+```
+
+#### Option F: Role from Nexus (bundled artifact)
+
+```json
+"source": {
+  "type": "nexus",
+  "repository": "ansible-roles",
+  "artifact": "nginx-role",
+  "version": "2.0.0",
+  "role_name": "nginx",
+  "role_vars": {
+    "nginx_port": 8080
+  },
+  "nexus_credential": "nexus-prod"
+}
+```
+
+#### Option G: Playbook from S3 / MinIO (bundled artifact)
+
+```json
+"source": {
+  "type": "s3",
+  "bucket": "ansible-artifacts",
+  "key": "app-deploy/1.2.0.tgz",
+  "path": "deploy/webserver.yml",
+  "s3_credential": "s3-artifacts"
+}
+```
+
+#### Option H: Role from S3 / MinIO (bundled artifact)
+
+```json
+"source": {
+  "type": "s3",
+  "bucket": "ansible-artifacts",
+  "key": "roles/nginx-role/2.0.0.tgz",
+  "role_name": "nginx",
+  "role_vars": {
+    "nginx_port": 8080
+  },
+  "s3_credential": "s3-artifacts"
+}
+```
+
 ---
 
 ### Inventory Options
@@ -1026,13 +1085,252 @@ eventSource.onmessage = (e) => {
 
 ---
 
+## Playbook Source Services
+
+Workers support multiple source types for fetching playbooks. An abstraction layer handles the differences.
+
+### Source Type Summary
+
+| Type | Use case | Network requirement |
+|------|----------|---------------------|
+| `playbook` / `role` | Direct Git access | Worker → Git server |
+| `collection_role` | Ansible Galaxy | Worker → Galaxy/Hub |
+| `nexus` | Bundled artifacts | Worker → Nexus |
+| `s3` | Bundled artifacts | Worker → S3/MinIO |
+
+### Artifact Service Implementation
+
+```python
+# app/services/playbook_source.py
+from abc import ABC, abstractmethod
+import tarfile
+import subprocess
+import requests
+import boto3
+from pathlib import Path
+
+class PlaybookSource(ABC):
+    @abstractmethod
+    def fetch(self, config: dict, target_dir: str) -> str:
+        """Fetch playbook/role source, return path to project directory"""
+        pass
+
+
+class GitPlaybookSource(PlaybookSource):
+    """Handles type: playbook, role (direct Git clone)"""
+
+    def fetch(self, config: dict, target_dir: str) -> str:
+        env = self._get_git_env(config.get('git_credential'))
+
+        # Clone repo
+        subprocess.run(
+            ["git", "clone", "--branch", config['branch'],
+             "--depth", "1", config['repo'], target_dir],
+            env=env,
+            check=True
+        )
+        return target_dir
+
+    def _get_git_env(self, credential: str) -> dict:
+        import os
+        env = os.environ.copy()
+
+        if credential:
+            cred = credential_service.get(credential)
+            if cred['type'] == 'git_ssh':
+                key_path = write_temp_key(cred['private_key'])
+                env['GIT_SSH_COMMAND'] = f'ssh -i {key_path} -o StrictHostKeyChecking=no'
+            elif cred['type'] == 'git_token':
+                env['GIT_ASKPASS'] = '/opt/ansible-api/bin/git-token-helper.sh'
+                env['GIT_TOKEN'] = cred['token']
+
+        return env
+
+
+class GalaxyPlaybookSource(PlaybookSource):
+    """Handles type: collection_role (Ansible Galaxy/Automation Hub)"""
+
+    def fetch(self, config: dict, target_dir: str) -> str:
+        # Install collection
+        collection = config['collection']
+        version = config.get('version', '')
+        galaxy_server = config.get('galaxy_server')
+
+        cmd = ["ansible-galaxy", "collection", "install",
+               f"{collection}{':' + version if version else ''}",
+               "-p", target_dir]
+
+        if galaxy_server:
+            cmd.extend(["--server", galaxy_server])
+
+        env = os.environ.copy()
+        if config.get('galaxy_credential'):
+            cred = credential_service.get(config['galaxy_credential'])
+            env['ANSIBLE_GALAXY_SERVER_TOKEN'] = cred['token']
+
+        subprocess.run(cmd, env=env, check=True)
+        return target_dir
+
+
+class NexusPlaybookSource(PlaybookSource):
+    """Handles type: nexus (bundled artifacts from Nexus Raw repository)"""
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+
+    def fetch(self, config: dict, target_dir: str) -> str:
+        repository = config['repository']
+        artifact = config['artifact']
+        version = config['version']
+
+        url = f"{self.base_url}/{repository}/{artifact}/{version}.tgz"
+
+        # Get credentials
+        auth = None
+        if config.get('nexus_credential'):
+            cred = credential_service.get(config['nexus_credential'])
+            auth = (cred['username'], cred['password'])
+
+        # Download
+        response = requests.get(url, auth=auth, stream=True)
+        response.raise_for_status()
+
+        # Save and extract
+        archive_path = Path(target_dir) / "artifact.tgz"
+        with open(archive_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        extract_dir = Path(target_dir) / "project"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, 'r:gz') as tar:
+            tar.extractall(extract_dir)
+
+        archive_path.unlink()
+        return str(extract_dir)
+
+
+class S3PlaybookSource(PlaybookSource):
+    """Handles type: s3 (bundled artifacts from S3/MinIO)"""
+
+    def __init__(self, endpoint_url: str = None):
+        self.endpoint_url = endpoint_url  # For MinIO; None for AWS S3
+
+    def fetch(self, config: dict, target_dir: str) -> str:
+        s3_config = {}
+
+        if config.get('s3_credential'):
+            cred = credential_service.get(config['s3_credential'])
+            s3_config['aws_access_key_id'] = cred['access_key']
+            s3_config['aws_secret_access_key'] = cred['secret_key']
+
+        if self.endpoint_url:
+            s3_config['endpoint_url'] = self.endpoint_url
+
+        s3 = boto3.client('s3', **s3_config)
+
+        # Download
+        archive_path = Path(target_dir) / "artifact.tgz"
+        s3.download_file(config['bucket'], config['key'], str(archive_path))
+
+        # Extract
+        extract_dir = Path(target_dir) / "project"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, 'r:gz') as tar:
+            tar.extractall(extract_dir)
+
+        archive_path.unlink()
+        return str(extract_dir)
+
+
+# Factory function
+def get_playbook_source(source_type: str) -> PlaybookSource:
+    sources = {
+        'playbook': GitPlaybookSource(),
+        'role': GitPlaybookSource(),
+        'collection_role': GalaxyPlaybookSource(),
+        'nexus': NexusPlaybookSource(settings.NEXUS_BASE_URL),
+        's3': S3PlaybookSource(settings.S3_ENDPOINT_URL),
+    }
+    if source_type not in sources:
+        raise ValueError(f"Unknown source type: {source_type}")
+    return sources[source_type]
+```
+
+### Updated Worker Integration
+
+```python
+# In worker's _prepare_environment()
+
+def _prepare_environment(self, job, payload) -> str:
+    private_data_dir = f"/tmp/ansible-jobs/{job.id}"
+    Path(private_data_dir).mkdir(parents=True, exist_ok=True)
+
+    # 1. Fetch playbook source (Git, Nexus, or S3)
+    source = payload['source']
+    playbook_source = get_playbook_source(source['type'])
+    project_dir = playbook_source.fetch(source, private_data_dir)
+
+    # 2. Resolve credentials, inventory, etc. (unchanged)
+    creds = self.credentials.resolve(payload['credentials'])
+    write_credentials(private_data_dir, creds)
+
+    inv = self.inventory.generate(payload['inventory'])
+    write_inventory(private_data_dir, inv)
+
+    if payload.get('extra_vars'):
+        write_extravars(private_data_dir, payload['extra_vars'])
+
+    return private_data_dir
+```
+
+### CI/CD Pipeline Example (Packaging & Uploading)
+
+```yaml
+# .gitlab-ci.yml
+stages:
+  - package
+  - upload
+
+package-playbooks:
+  stage: package
+  script:
+    - tar -czvf app-deploy-${CI_COMMIT_TAG}.tgz -C playbooks .
+  artifacts:
+    paths:
+      - app-deploy-${CI_COMMIT_TAG}.tgz
+
+upload-to-nexus:
+  stage: upload
+  script:
+    - |
+      curl -u ${NEXUS_USER}:${NEXUS_PASS} \
+        --upload-file app-deploy-${CI_COMMIT_TAG}.tgz \
+        ${NEXUS_URL}/repository/ansible-playbooks/app-deploy/${CI_COMMIT_TAG}.tgz
+    - |
+      curl -u ${NEXUS_USER}:${NEXUS_PASS} \
+        --upload-file app-deploy-${CI_COMMIT_TAG}.tgz \
+        ${NEXUS_URL}/repository/ansible-playbooks/app-deploy/latest.tgz
+
+upload-to-s3:
+  stage: upload
+  script:
+    - aws s3 cp app-deploy-${CI_COMMIT_TAG}.tgz s3://ansible-artifacts/app-deploy/${CI_COMMIT_TAG}.tgz
+    - aws s3 cp app-deploy-${CI_COMMIT_TAG}.tgz s3://ansible-artifacts/app-deploy/latest.tgz
+```
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
 
 - [x] Data Model (MariaDB schema)
 - [x] Worker Component Design
-- [ ] Git Repository Caching Strategy
+- [x] Playbook Source Services (Git, Nexus, S3)
+- [ ] Git Repository Caching Strategy (skipped for MVP)
 - [ ] Credential Storage & Encryption
 - [ ] Error Handling & Retry Logic
 - [ ] Webhook Delivery
@@ -1047,6 +1345,7 @@ Completed:
 - [x] Queue Abstraction (rq MVP with Celery migration path)
 - [x] Data Model (MariaDB schema)
 - [x] Worker Component Design
+- [x] Playbook Source Services (Git, Nexus, S3)
 
 ---
 
@@ -1069,3 +1368,4 @@ Completed:
 | 2026-01-17 | - | Added Worker Component Design |
 | 2026-01-17 | - | Added progress update, log handling, and stdout streaming details |
 | 2026-01-17 | - | Updated SSE streaming to support client-selectable content via query param |
+| 2026-01-17 | - | Added Playbook Source Services (Git, Nexus, S3) with bundled artifact support |
