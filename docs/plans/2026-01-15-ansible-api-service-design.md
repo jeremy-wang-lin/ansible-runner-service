@@ -1673,6 +1673,235 @@ credential_service = CredentialService(master_key)
 
 ---
 
+## Error Handling & Retry Logic
+
+### Error Categories
+
+| Category | Examples | Retry? |
+|----------|----------|--------|
+| Client errors (4xx) | Invalid payload, missing credential, bad auth | No |
+| Transient errors | Network timeout, Git clone failed, temp resource unavailable | Yes |
+| Permanent errors | Playbook syntax error, host unreachable, permission denied | No |
+| Infrastructure errors | DB down, Redis down, worker crash | Yes (with backoff) |
+
+### Error Handling by Layer
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        API Layer                                 │
+│  - Validate request → 400 Bad Request                           │
+│  - Auth failed → 401 Unauthorized                               │
+│  - Credential not found → 404 Not Found                         │
+│  - Rate limited → 429 Too Many Requests                         │
+│  - Queue error → 503 Service Unavailable (retry-able)           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Queue Layer (rq)                          │
+│  - Job picked up → retry on worker crash                        │
+│  - Job timeout → mark failed, no retry                          │
+│  - Worker exception → retry with backoff (configurable)         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Worker Layer                              │
+│  - Source fetch failed → retry (transient)                      │
+│  - Credential decrypt failed → fail immediately (permanent)     │
+│  - Playbook execution failed → fail, report exit code           │
+│  - Log upload failed → retry, then warn (non-critical)          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Job Status with Error States
+
+```python
+class JobStatus(Enum):
+    PENDING = "pending"           # Queued, waiting for worker
+    RUNNING = "running"           # Worker executing
+    SUCCESS = "success"           # Completed successfully
+    FAILED = "failed"             # Permanent failure
+    CANCELLED = "cancelled"       # User cancelled
+    RETRYING = "retrying"         # Failed, will retry
+```
+
+### Retry Configuration
+
+```python
+# app/config.py
+class RetryConfig:
+    MAX_RETRIES = 3
+    INITIAL_BACKOFF = 10          # seconds
+    MAX_BACKOFF = 300             # 5 minutes
+    BACKOFF_MULTIPLIER = 2        # exponential
+
+    RETRY_POLICIES = {
+        'git_clone_failed': {'max_retries': 3, 'backoff': 30},
+        'nexus_download_failed': {'max_retries': 3, 'backoff': 15},
+        'ansible_timeout': {'max_retries': 0},      # Don't retry
+        'credential_error': {'max_retries': 0},     # Don't retry
+    }
+```
+
+### Exception Classes
+
+```python
+# app/exceptions.py
+
+class RetryableError(Exception):
+    """Error that can be retried"""
+    def __init__(self, error_type: str, message: str):
+        self.error_type = error_type
+        self.message = message
+
+    def to_dict(self):
+        return {"type": self.error_type, "message": self.message, "retryable": True}
+
+
+class PermanentError(Exception):
+    """Error that should not be retried"""
+    def __init__(self, error_type: str, message: str):
+        self.error_type = error_type
+        self.message = message
+
+    def to_dict(self):
+        return {"type": self.error_type, "message": self.message, "retryable": False}
+```
+
+### Worker Error Handling
+
+```python
+def execute(self, job_id: str, payload: dict):
+    job = db.jobs.get(job_id)
+
+    try:
+        job.update(status='running', started_at=now())
+
+        # Phase 1: Fetch source (retryable)
+        try:
+            project_dir = self._fetch_source(payload)
+        except Exception as e:
+            raise RetryableError("source_fetch_failed", str(e))
+
+        # Phase 2: Resolve credentials (not retryable)
+        try:
+            creds = self._resolve_credentials(payload)
+        except CredentialNotFoundError as e:
+            raise PermanentError("credential_not_found", str(e))
+
+        # Phase 3-5: Prepare, execute, finalize...
+        result = self._run_playbook(job_id, private_data_dir, payload)
+        self._finalize(job, result, private_data_dir)
+
+    except RetryableError as e:
+        self._handle_retryable_error(job, e)
+        raise  # Let rq handle retry
+
+    except PermanentError as e:
+        self._handle_permanent_error(job, e)
+
+
+def _handle_retryable_error(self, job, error):
+    retry_count = job.retry_count or 0
+    max_retries = RetryConfig.RETRY_POLICIES.get(
+        error.error_type, {}
+    ).get('max_retries', RetryConfig.MAX_RETRIES)
+
+    if retry_count >= max_retries:
+        self._handle_permanent_error(job, PermanentError(
+            error.error_type, f"{error.message} (max retries exceeded)"
+        ))
+    else:
+        job.update(status='retrying', retry_count=retry_count + 1, last_error=error.to_dict())
+
+
+def _handle_permanent_error(self, job, error):
+    job.update(status='failed', finished_at=now(), error=error.to_dict())
+    if job.callback_url:
+        self._send_webhook(job, success=False)
+```
+
+### Database Schema Addition
+
+```sql
+ALTER TABLE jobs ADD COLUMN retry_count INT DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN last_error JSON NULL;
+ALTER TABLE jobs ADD COLUMN next_retry_at TIMESTAMP NULL;
+```
+
+### Error Response Examples
+
+```json
+// Permanent failure
+{
+    "id": "job-abc123",
+    "status": "failed",
+    "error": {
+        "type": "credential_not_found",
+        "message": "Credential 'prod-ssh-key' not found",
+        "retryable": false
+    }
+}
+
+// Retrying
+{
+    "id": "job-abc123",
+    "status": "retrying",
+    "retry": {
+        "count": 2,
+        "max": 3,
+        "next_at": "2026-01-17T10:05:30Z",
+        "last_error": {
+            "type": "source_fetch_failed",
+            "message": "Git clone timed out",
+            "retryable": true
+        }
+    }
+}
+```
+
+### Retry Flow
+
+```
+                    ┌─────────────┐
+                    │  Job fails  │
+                    └──────┬──────┘
+                           │
+                           ▼
+                 ┌─────────────────────┐
+                 │  RetryableError?    │
+                 └─────────┬───────────┘
+                           │
+              ┌────────────┴────────────┐
+              │ Yes                     │ No (PermanentError)
+              ▼                         ▼
+    ┌─────────────────────┐   ┌─────────────────────┐
+    │ retry_count < max?  │   │  status='failed'    │
+    └─────────┬───────────┘   │  (immediate)        │
+              │               └─────────────────────┘
+   ┌──────────┴──────────┐
+   │ Yes                 │ No
+   ▼                     ▼
+┌──────────────────┐  ┌─────────────────────┐
+│ status='retrying'│  │  status='failed'    │
+│ retry_count++    │  │  (max retries       │
+│ schedule backoff │  │   exceeded)         │
+└──────────────────┘  └─────────────────────┘
+```
+
+### Design Decisions
+
+| Decision | Approach |
+|----------|----------|
+| Retry strategy | Exponential backoff with jitter (10s → 300s max) |
+| Max retries | 3 by default, configurable per error type |
+| Job status | Added `retrying` status to track retry state |
+| Error tracking | `retry_count`, `last_error`, `next_retry_at` in jobs table |
+| Exception classes | `RetryableError` vs `PermanentError` for clear handling |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
@@ -1682,7 +1911,7 @@ The following sections need to be designed:
 - [x] Playbook Source Services (Git, Nexus, S3)
 - [ ] Git Repository Caching Strategy (skipped for MVP)
 - [x] Credential Storage & Encryption
-- [ ] Error Handling & Retry Logic
+- [x] Error Handling & Retry Logic
 - [ ] Webhook Delivery
 - [ ] Kubernetes Deployment Architecture
 - [ ] Observability (metrics, tracing, logging)
@@ -1697,6 +1926,7 @@ Completed:
 - [x] Worker Component Design
 - [x] Playbook Source Services (Git, Nexus, S3)
 - [x] Credential Storage & Encryption
+- [x] Error Handling & Retry Logic
 
 ---
 
@@ -1721,3 +1951,4 @@ Completed:
 | 2026-01-17 | - | Updated SSE streaming to support client-selectable content via query param |
 | 2026-01-17 | - | Added Playbook Source Services (Git, Nexus, S3) with bundled artifact support |
 | 2026-01-17 | - | Added Credential Storage & Encryption with envelope encryption and AAD |
+| 2026-01-17 | - | Added Error Handling & Retry Logic |
