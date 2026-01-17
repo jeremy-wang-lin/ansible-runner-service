@@ -1323,6 +1323,356 @@ upload-to-s3:
 
 ---
 
+## Credential Storage & Encryption
+
+### Credential Types
+
+| Type | Contents | Used for |
+|------|----------|----------|
+| `ssh_key` | Private key, passphrase | Ansible SSH to hosts |
+| `password` | Username, password | Ansible become/sudo |
+| `vault_password` | Password string | Ansible Vault decryption |
+| `cloud_aws` | Access key, secret key | Dynamic inventory, cloud modules |
+| `cloud_gcp` | Service account JSON | Dynamic inventory, cloud modules |
+| `cloud_azure` | Client ID, secret, tenant | Dynamic inventory, cloud modules |
+| `git_ssh` | Private key | Git clone (SSH) |
+| `git_token` | Token, username | Git clone (HTTPS) |
+| `galaxy_token` | Token | Ansible Galaxy / Automation Hub |
+| `nexus` | Username, password | Nexus artifact download |
+| `s3` | Access key, secret key, endpoint | S3/MinIO artifact download |
+
+### Encryption Approach (Envelope Encryption)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Master Key (KEK - Key Encryption Key)                 │
+│  - Stored in: K8s Secret / Vault / HSM                 │
+│  - Never stored in database                            │
+└─────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│  Data Encryption Key (DEK) per credential              │
+│  - Generated randomly for each credential              │
+│  - Encrypted with Master Key                           │
+│  - Stored alongside encrypted data                     │
+└─────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│  Credential Data                                       │
+│  - Encrypted with DEK (AES-256-GCM)                    │
+│  - Stored in database                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Why envelope encryption (KEK + DEK)?**
+- Master key rotation doesn't require re-encrypting all credentials
+- Each credential has unique DEK - compromise of one doesn't expose others
+- DEK can be cached in memory; master key accessed less frequently
+
+### Database Storage Format
+
+```sql
+CREATE TABLE credentials (
+    id VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    type ENUM('ssh_key', 'password', 'vault_password',
+              'cloud_aws', 'cloud_gcp', 'cloud_azure',
+              'git_ssh', 'git_token', 'galaxy_token',
+              'nexus', 's3') NOT NULL,
+
+    -- Encryption fields
+    encrypted_dek VARBINARY(512) NOT NULL,    -- DEK encrypted with master key
+    encrypted_data BLOB NOT NULL,              -- Credential data encrypted with DEK
+    encryption_iv VARBINARY(16) NOT NULL,      -- IV for AES-GCM
+    encryption_tag VARBINARY(16) NOT NULL,     -- Auth tag for AES-GCM
+
+    -- Metadata (not encrypted)
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by VARCHAR(36),
+
+    INDEX idx_name (name),
+    INDEX idx_type (type)
+);
+```
+
+### Credential Data Schemas (JSON before encryption)
+
+```python
+CREDENTIAL_SCHEMAS = {
+    'ssh_key': {
+        'private_key': str,      # PEM format
+        'passphrase': str,       # Optional
+    },
+    'password': {
+        'username': str,
+        'password': str,
+    },
+    'vault_password': {
+        'password': str,
+    },
+    'cloud_aws': {
+        'access_key': str,
+        'secret_key': str,
+        'region': str,           # Optional default region
+    },
+    'cloud_gcp': {
+        'service_account_json': str,  # Full JSON content
+    },
+    'cloud_azure': {
+        'client_id': str,
+        'client_secret': str,
+        'tenant_id': str,
+        'subscription_id': str,  # Optional
+    },
+    'git_ssh': {
+        'private_key': str,      # PEM format
+        'passphrase': str,       # Optional
+    },
+    'git_token': {
+        'username': str,         # Often 'oauth2' or actual username
+        'token': str,
+    },
+    'galaxy_token': {
+        'token': str,
+    },
+    'nexus': {
+        'username': str,
+        'password': str,
+    },
+    's3': {
+        'access_key': str,
+        'secret_key': str,
+        'endpoint_url': str,     # Optional, for MinIO
+    },
+}
+```
+
+### Credential Service Implementation
+
+```python
+# app/services/credentials.py
+import os
+import json
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import secrets
+
+class CredentialService:
+    def __init__(self, master_key: bytes):
+        """
+        master_key: 32 bytes for AES-256
+        Should be loaded from K8s Secret, Vault, or environment
+        """
+        self.master_key = master_key
+        self._kek = AESGCM(master_key)  # Key Encryption Key cipher
+
+    def _build_aad(self, cred_id: str, cred_type: str) -> bytes:
+        """
+        Build AAD (Additional Authenticated Data) from credential metadata.
+        Uses id + type (both immutable). Name excluded to allow renaming.
+        AAD prevents swapping encrypted data between credentials.
+        """
+        aad = f"{cred_id}:{cred_type}".encode('utf-8')
+        return aad
+
+    def create(self, name: str, cred_type: str, data: dict) -> str:
+        """Create and store encrypted credential"""
+
+        # Validate data against schema
+        self._validate_schema(cred_type, data)
+
+        # Generate credential ID first (needed for AAD)
+        cred_id = generate_uuid()
+
+        # Build AAD
+        aad = self._build_aad(cred_id, cred_type)
+
+        # Generate random DEK
+        dek = secrets.token_bytes(32)
+
+        # Encrypt DEK with master key (with AAD)
+        dek_iv = secrets.token_bytes(12)
+        encrypted_dek = self._kek.encrypt(dek_iv, dek, aad)
+
+        # Encrypt credential data with DEK (with AAD)
+        data_iv = secrets.token_bytes(12)
+        plaintext = json.dumps(data).encode('utf-8')
+        aesgcm = AESGCM(dek)
+        ciphertext_with_tag = aesgcm.encrypt(data_iv, plaintext, aad)
+
+        # AES-GCM appends 16-byte tag to ciphertext
+        ciphertext = ciphertext_with_tag[:-16]
+        tag = ciphertext_with_tag[-16:]
+
+        # Store in database
+        db.execute("""
+            INSERT INTO credentials
+            (id, name, type, encrypted_dek, encrypted_data, encryption_iv, encryption_tag)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, [cred_id, name, cred_type,
+              dek_iv + encrypted_dek,
+              ciphertext, data_iv, tag])
+
+        return cred_id
+
+    def get(self, name: str) -> dict:
+        """Retrieve and decrypt credential"""
+
+        row = db.query_one(
+            "SELECT id, name, type, encrypted_dek, encrypted_data, encryption_iv, encryption_tag "
+            "FROM credentials WHERE name = %s", [name]
+        )
+
+        if not row:
+            raise CredentialNotFoundError(f"Credential '{name}' not found")
+
+        # Rebuild AAD from stored metadata
+        aad = self._build_aad(row['id'], row['type'])
+
+        # Decrypt DEK (with AAD verification)
+        dek_iv = row['encrypted_dek'][:12]
+        encrypted_dek = row['encrypted_dek'][12:]
+        try:
+            dek = self._kek.decrypt(dek_iv, encrypted_dek, aad)
+        except Exception as e:
+            raise CredentialTamperedError(f"Credential '{name}' failed integrity check") from e
+
+        # Decrypt credential data (with AAD verification)
+        aesgcm = AESGCM(dek)
+        ciphertext_with_tag = row['encrypted_data'] + row['encryption_tag']
+        try:
+            plaintext = aesgcm.decrypt(row['encryption_iv'], ciphertext_with_tag, aad)
+        except Exception as e:
+            raise CredentialTamperedError(f"Credential '{name}' failed integrity check") from e
+
+        data = json.loads(plaintext.decode('utf-8'))
+        data['type'] = row['type']
+
+        return data
+
+    def update(self, name: str, data: dict) -> bool:
+        """Update credential - re-encrypts with same AAD (id + type unchanged)"""
+
+        row = db.query_one(
+            "SELECT id, type FROM credentials WHERE name = %s", [name]
+        )
+
+        if not row:
+            raise CredentialNotFoundError(f"Credential '{name}' not found")
+
+        # Validate data against schema
+        self._validate_schema(row['type'], data)
+
+        # AAD stays the same (id, type unchanged)
+        aad = self._build_aad(row['id'], row['type'])
+
+        # Generate new DEK
+        dek = secrets.token_bytes(32)
+
+        # Encrypt DEK with master key
+        dek_iv = secrets.token_bytes(12)
+        encrypted_dek = self._kek.encrypt(dek_iv, dek, aad)
+
+        # Encrypt new credential data
+        data_iv = secrets.token_bytes(12)
+        plaintext = json.dumps(data).encode('utf-8')
+        aesgcm = AESGCM(dek)
+        ciphertext_with_tag = aesgcm.encrypt(data_iv, plaintext, aad)
+
+        ciphertext = ciphertext_with_tag[:-16]
+        tag = ciphertext_with_tag[-16:]
+
+        # Update in database
+        db.execute("""
+            UPDATE credentials
+            SET encrypted_dek = %s, encrypted_data = %s,
+                encryption_iv = %s, encryption_tag = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE name = %s
+        """, [dek_iv + encrypted_dek, ciphertext, data_iv, tag, name])
+
+        return True
+
+    def rename(self, old_name: str, new_name: str) -> bool:
+        """Rename credential - no re-encryption needed since AAD uses id + type only"""
+        result = db.execute(
+            "UPDATE credentials SET name = %s, updated_at = CURRENT_TIMESTAMP WHERE name = %s",
+            [new_name, old_name]
+        )
+        return result.rowcount > 0
+
+    def delete(self, name: str) -> bool:
+        """Delete credential"""
+        result = db.execute("DELETE FROM credentials WHERE name = %s", [name])
+        return result.rowcount > 0
+
+    def list(self) -> list:
+        """List credentials (names and types only, no secrets)"""
+        rows = db.query(
+            "SELECT name, type, description, created_at FROM credentials"
+        )
+        return rows
+
+    def _validate_schema(self, cred_type: str, data: dict):
+        """Validate credential data against expected schema"""
+        schema = CREDENTIAL_SCHEMAS.get(cred_type)
+        if not schema:
+            raise ValueError(f"Unknown credential type: {cred_type}")
+
+        for field, field_type in schema.items():
+            if field in data and not isinstance(data[field], field_type):
+                raise ValueError(f"Field '{field}' must be {field_type.__name__}")
+```
+
+### Master Key Management
+
+| Option | Pros | Cons | Best for |
+|--------|------|------|----------|
+| K8s Secret | Simple, native K8s | Limited security (etcd encryption needed) | MVP |
+| HashiCorp Vault | Strong security, audit | Additional infra | Production |
+| AWS KMS / Azure Key Vault | Managed, HSM-backed | Cloud vendor lock-in | Cloud-native |
+| Environment variable | Simple | Least secure | Development only |
+
+**MVP approach (K8s Secret):**
+
+```yaml
+# k8s/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ansible-api-master-key
+type: Opaque
+data:
+  # base64 encoded 32-byte key
+  # Generate with: openssl rand -base64 32
+  master-key: <base64-encoded-key>
+```
+
+```python
+# Load in application
+import os
+import base64
+
+master_key = base64.b64decode(os.environ['MASTER_KEY'])
+credential_service = CredentialService(master_key)
+```
+
+### Security Considerations
+
+| Concern | Mitigation |
+|---------|------------|
+| Key in memory | Use secure memory if available; clear after use |
+| Database backup exposure | Backups contain encrypted data only; useless without master key |
+| Master key rotation | Re-encrypt all DEKs with new master key (not credential data) |
+| Audit trail | Log credential access (name only, never values) |
+| API exposure | Never return decrypted credentials via API; only workers access them |
+| Data tampering | AAD (id + type) detects swapped or modified encrypted data |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
@@ -1331,7 +1681,7 @@ The following sections need to be designed:
 - [x] Worker Component Design
 - [x] Playbook Source Services (Git, Nexus, S3)
 - [ ] Git Repository Caching Strategy (skipped for MVP)
-- [ ] Credential Storage & Encryption
+- [x] Credential Storage & Encryption
 - [ ] Error Handling & Retry Logic
 - [ ] Webhook Delivery
 - [ ] Kubernetes Deployment Architecture
@@ -1346,6 +1696,7 @@ Completed:
 - [x] Data Model (MariaDB schema)
 - [x] Worker Component Design
 - [x] Playbook Source Services (Git, Nexus, S3)
+- [x] Credential Storage & Encryption
 
 ---
 
@@ -1369,3 +1720,4 @@ Completed:
 | 2026-01-17 | - | Added progress update, log handling, and stdout streaming details |
 | 2026-01-17 | - | Updated SSE streaming to support client-selectable content via query param |
 | 2026-01-17 | - | Added Playbook Source Services (Git, Nexus, S3) with bundled artifact support |
+| 2026-01-17 | - | Added Credential Storage & Encryption with envelope encryption and AAD |
