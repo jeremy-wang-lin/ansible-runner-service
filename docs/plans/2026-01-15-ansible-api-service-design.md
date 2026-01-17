@@ -763,6 +763,267 @@ Events are published to Redis channel `job:{id}:events`:
 | Temp private_data_dir | Isolation between jobs; clean credential handling |
 | Cleanup after job | Don't leak credentials or fill disk |
 
+### Progress Update Implementation
+
+The `_update_progress()` method updates MariaDB so polling clients see real-time status:
+
+```python
+def _update_progress(self, job_id: str, event: dict):
+    """Update job progress in DB (throttled to significant events only)"""
+
+    event_type = event['event']
+    event_data = event.get('event_data', {})
+
+    if event_type == 'playbook_on_play_start':
+        db.jobs.update(job_id, progress={
+            'current_play': event_data.get('play'),
+            'current_task': None
+        })
+
+    elif event_type == 'playbook_on_task_start':
+        db.jobs.update(job_id, progress={
+            'current_task': event_data.get('task')
+        })
+
+    elif event_type == 'runner_on_ok':
+        db.execute(
+            "UPDATE jobs SET hosts_ok = hosts_ok + 1 WHERE id = %s",
+            [job_id]
+        )
+
+    elif event_type == 'runner_on_failed':
+        db.execute(
+            "UPDATE jobs SET hosts_failed = hosts_failed + 1 WHERE id = %s",
+            [job_id]
+        )
+
+    elif event_type == 'runner_on_unreachable':
+        db.execute(
+            "UPDATE jobs SET hosts_unreachable = hosts_unreachable + 1 WHERE id = %s",
+            [job_id]
+        )
+```
+
+### Log Handling Clarification
+
+Logs are handled at two levels - the event handler does NOT write logs:
+
+| Concern | Component | Storage |
+|---------|-----------|---------|
+| Real-time events | Event handler | Redis Pub/Sub (ephemeral) |
+| Real-time stdout | Stdout callback | Redis Pub/Sub (ephemeral) |
+| Full execution logs | ansible-runner artifacts | Object Storage (persistent) |
+
+```
+During execution:
+┌────────────────────┐     ┌────────────────────┐
+│   event_handler    │     │   stdout_callback  │
+│   → Redis Pub/Sub  │     │   → Redis Pub/Sub  │
+│   (structured)     │     │   (raw output)     │
+└────────────────────┘     └────────────────────┘
+
+After execution:
+┌──────────────────────────────────────────────┐
+│  ansible-runner stores in private_data_dir:  │
+│  - artifacts/stdout (full output)            │
+│  - artifacts/status                          │
+│  - artifacts/rc (return code)                │
+└──────────────────────────────────────────────┘
+                    │
+                    ▼
+┌──────────────────────────────────────────────┐
+│  _finalize() uploads to Object Storage       │
+│  → logs/{job_id}/stdout.txt                  │
+└──────────────────────────────────────────────┘
+```
+
+### Real-time Stdout Streaming
+
+Clients connect to SSE endpoint to see live ansible output (like terminal experience):
+
+**Worker streams stdout to Redis:**
+
+```python
+def _run_playbook(self, job_id: str, private_data_dir: str, payload: dict):
+    """Execute playbook with real-time stdout streaming"""
+
+    def event_handler(event):
+        """Structured events (task status, host results)"""
+        self.redis.publish(
+            f"job:{job_id}:events",
+            json.dumps({"type": "event", "data": event})
+        )
+        self._update_progress(job_id, event)
+
+    # Capture stdout line by line
+    stdout_lines = []
+
+    def stdout_callback(line):
+        """Raw stdout lines (ansible output as you'd see in terminal)"""
+        stdout_lines.append(line)
+        self.redis.publish(
+            f"job:{job_id}:events",
+            json.dumps({"type": "stdout", "line": line})
+        )
+
+    options = payload.get('options', {})
+
+    runner_config = ansible_runner.RunnerConfig(
+        private_data_dir=private_data_dir,
+        playbook=payload['source']['path'],
+        timeout=options.get('timeout', 3600),
+        # ... other options
+    )
+    runner_config.prepare()
+
+    runner = ansible_runner.Runner(config=runner_config)
+
+    # Run with both callbacks
+    result = runner.run()
+
+    # Process events with our handlers
+    for event in runner.events:
+        event_handler(event)
+
+    return result
+```
+
+**API endpoint for SSE streaming (client chooses content via query param):**
+
+```
+GET /jobs/{job_id}/stream?include=events        # Structured events only
+GET /jobs/{job_id}/stream?include=stdout        # Raw stdout only
+GET /jobs/{job_id}/stream?include=events,stdout # Both (default)
+```
+
+```python
+# app/api/jobs.py
+from fastapi import APIRouter, Query
+from sse_starlette.sse import EventSourceResponse
+from typing import List
+
+router = APIRouter()
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job(
+    job_id: str,
+    include: List[str] = Query(default=["events", "stdout"])
+):
+    """
+    Stream real-time job output via Server-Sent Events.
+
+    Query params:
+        include: Comma-separated list of content types
+                 - "events": Structured events (task status, host results)
+                 - "stdout": Raw ansible output (terminal-like)
+                 Default: both
+    """
+    include_events = "events" in include
+    include_stdout = "stdout" in include
+
+    async def event_generator():
+        pubsub = redis.pubsub()
+        pubsub.subscribe(f"job:{job_id}:events")
+
+        try:
+            async for message in pubsub.listen():
+                if message['type'] == 'message':
+                    data = json.loads(message['data'])
+
+                    # Filter based on client preference
+                    if data.get('type') == 'stdout' and not include_stdout:
+                        continue
+                    if data.get('type') == 'event' and not include_events:
+                        # Still check for completion even if not streaming events
+                        if data['data'].get('event') == 'playbook_on_stats':
+                            yield {"event": "done", "data": "{}"}
+                            break
+                        continue
+
+                    yield {"event": "message", "data": json.dumps(data)}
+
+                    # End stream when job completes
+                    if data.get('type') == 'event':
+                        if data['data'].get('event') == 'playbook_on_stats':
+                            yield {"event": "done", "data": "{}"}
+                            break
+        finally:
+            pubsub.unsubscribe()
+
+    return EventSourceResponse(event_generator())
+```
+
+**Use cases for each mode:**
+
+| Mode | Use case |
+|------|----------|
+| `include=events` | Programmatic clients that parse structured data (CI/CD pipelines) |
+| `include=stdout` | Terminal-like UI that just displays raw output |
+| `include=events,stdout` | Rich UI showing both progress metrics and live output |
+
+**Client receives interleaved stdout and events (when both enabled):**
+
+```
+event: message
+data: {"type": "stdout", "line": "PLAY [Deploy application] ***********************"}
+
+event: message
+data: {"type": "stdout", "line": ""}
+
+event: message
+data: {"type": "stdout", "line": "TASK [Gathering Facts] **************************"}
+
+event: message
+data: {"type": "event", "data": {"event": "runner_on_ok", "host": "10.0.1.10"}}
+
+event: message
+data: {"type": "stdout", "line": "ok: [10.0.1.10]"}
+
+event: message
+data: {"type": "stdout", "line": ""}
+
+event: message
+data: {"type": "stdout", "line": "TASK [Copy files] *******************************"}
+
+event: done
+data: {}
+```
+
+**Client example (JavaScript):**
+
+```javascript
+// Rich UI - both events and stdout
+const eventSource = new EventSource('/api/v1/jobs/job-abc123/stream?include=events,stdout');
+
+eventSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+
+    if (data.type === 'stdout') {
+        // Append to terminal-like display
+        terminal.append(data.line + '\n');
+    } else if (data.type === 'event') {
+        // Update structured progress (e.g., host counters)
+        updateProgress(data.data);
+    }
+};
+
+eventSource.addEventListener('done', () => {
+    eventSource.close();
+    console.log('Job completed');
+});
+
+
+// CI/CD pipeline - events only (smaller payload, structured data)
+const eventSource = new EventSource('/api/v1/jobs/job-abc123/stream?include=events');
+
+eventSource.onmessage = (e) => {
+    const event = JSON.parse(e.data).data;
+    if (event.event === 'runner_on_failed') {
+        console.error(`Task failed on ${event.host}`);
+    }
+};
+```
+
 ---
 
 ## Sections To Be Completed
@@ -806,3 +1067,5 @@ Completed:
 | 2026-01-15 | - | Simplified to rq-based architecture with Celery migration path |
 | 2026-01-15 | - | Added Data Model (MariaDB schema) |
 | 2026-01-17 | - | Added Worker Component Design |
+| 2026-01-17 | - | Added progress update, log handling, and stdout streaming details |
+| 2026-01-17 | - | Updated SSE streaming to support client-selectable content via query param |
