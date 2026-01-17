@@ -532,12 +532,245 @@ CREATE TABLE job_host_results (
 
 ---
 
+## Worker Component Design
+
+### Worker Responsibilities
+
+1. Pull jobs from rq queue
+2. Prepare execution environment (Git clone, credentials, inventory)
+3. Execute playbook via ansible-runner
+4. Stream events to Redis for real-time progress
+5. Upload logs to Object Storage
+6. Update job status in MariaDB
+
+### Worker Process Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        rq Worker                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. FETCH JOB                                                    │
+│    - Dequeue job from Redis                                     │
+│    - Update job status → 'running' in MariaDB                   │
+│    - Record worker_id and started_at                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. PREPARE ENVIRONMENT                                          │
+│    - Clone/pull Git repo (with caching)                         │
+│    - Resolve credentials (fetch from DB or Vault)               │
+│    - Generate inventory file (inline/dynamic/git)               │
+│    - Create ansible-runner private_data_dir                     │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. EXECUTE PLAYBOOK                                             │
+│    - Run via ansible_runner.run()                               │
+│    - Stream events to Redis pub/sub (job:{id}:events)           │
+│    - Capture stdout/stderr                                      │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 4. FINALIZE                                                     │
+│    - Upload full logs to Object Storage                         │
+│    - Parse results, update job_host_results                     │
+│    - Update job status → 'success'/'failed' in MariaDB          │
+│    - Send webhook callback if configured                        │
+│    - Cleanup private_data_dir                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Core Worker Code Structure
+
+```python
+# app/workers/ansible_job.py
+import ansible_runner
+from redis import Redis
+from app.services.git import GitService
+from app.services.credentials import CredentialService
+from app.services.inventory import InventoryService
+from app.services.storage import StorageService
+from app.db import get_db
+
+class AnsibleJobWorker:
+    def __init__(self, redis: Redis):
+        self.redis = redis
+        self.git = GitService()
+        self.credentials = CredentialService()
+        self.inventory = InventoryService()
+        self.storage = StorageService()
+
+    def execute(self, job_id: str, payload: dict):
+        db = get_db()
+        job = db.jobs.get(job_id)
+
+        try:
+            # Update status
+            job.update(status='running', started_at=now(), worker_id=self.worker_id)
+
+            # Prepare environment
+            private_data_dir = self._prepare_environment(job, payload)
+
+            # Execute with event streaming
+            result = self._run_playbook(job_id, private_data_dir, payload)
+
+            # Finalize
+            self._finalize(job, result, private_data_dir)
+
+        except Exception as e:
+            job.update(status='failed', finished_at=now(), error=str(e))
+            raise
+
+    def _prepare_environment(self, job, payload) -> str:
+        """Create ansible-runner private_data_dir with all required files"""
+
+        private_data_dir = f"/tmp/ansible-jobs/{job.id}"
+
+        # 1. Clone/pull playbook repo
+        source = payload['source']
+        project_dir = self.git.ensure_repo(
+            repo=source['repo'],
+            branch=source['branch'],
+            credential=source.get('git_credential')
+        )
+
+        # 2. Resolve credentials → write to private_data_dir/env/
+        creds = self.credentials.resolve(payload['credentials'])
+        write_credentials(private_data_dir, creds)
+
+        # 3. Generate inventory → write to private_data_dir/inventory/
+        inv = self.inventory.generate(payload['inventory'])
+        write_inventory(private_data_dir, inv)
+
+        # 4. Write extra_vars → private_data_dir/env/extravars
+        if payload.get('extra_vars'):
+            write_extravars(private_data_dir, payload['extra_vars'])
+
+        return private_data_dir
+
+    def _run_playbook(self, job_id: str, private_data_dir: str, payload: dict):
+        """Execute playbook with real-time event streaming"""
+
+        def event_handler(event):
+            # Publish to Redis for SSE subscribers
+            self.redis.publish(
+                f"job:{job_id}:events",
+                json.dumps(event)
+            )
+            # Update progress in MariaDB (throttled)
+            self._update_progress(job_id, event)
+
+        options = payload.get('options', {})
+
+        result = ansible_runner.run(
+            private_data_dir=private_data_dir,
+            playbook=payload['source']['path'],
+            event_handler=event_handler,
+            timeout=options.get('timeout', 3600),
+            tags=options.get('tags'),
+            skip_tags=options.get('skip_tags'),
+            limit=options.get('limit'),
+            verbosity=options.get('verbosity', 0),
+            check=options.get('check_mode', False),
+            diff=options.get('diff_mode', False),
+            forks=options.get('forks', 5),
+        )
+
+        return result
+
+    def _finalize(self, job, result, private_data_dir: str):
+        """Upload logs, update DB, send webhook"""
+
+        # Upload full stdout to object storage
+        log_path = f"logs/{job.id}/stdout.txt"
+        self.storage.upload(log_path, result.stdout.read())
+
+        # Parse host results
+        host_results = self._parse_host_results(result)
+        for hr in host_results:
+            db.job_host_results.create(job_id=job.id, **hr)
+
+        # Update job record
+        job.update(
+            status='success' if result.rc == 0 else 'failed',
+            finished_at=now(),
+            exit_code=result.rc,
+            hosts_ok=result.stats.get('ok', 0),
+            hosts_failed=result.stats.get('failures', 0),
+            hosts_unreachable=result.stats.get('unreachable', 0),
+            log_path=log_path
+        )
+
+        # Send webhook
+        if job.callback_url:
+            self._send_webhook(job)
+
+        # Cleanup
+        shutil.rmtree(private_data_dir)
+```
+
+### Event Streaming via Redis Pub/Sub
+
+Events are published to Redis channel `job:{id}:events`:
+
+```python
+# Play start event
+{
+    "event": "playbook_on_play_start",
+    "timestamp": "2026-01-15T10:00:05Z",
+    "data": {
+        "play": "Deploy application",
+        "hosts": ["10.0.1.10", "10.0.1.11"]
+    }
+}
+
+# Task event
+{
+    "event": "runner_on_ok",
+    "timestamp": "2026-01-15T10:00:10Z",
+    "data": {
+        "task": "Copy application files",
+        "host": "10.0.1.10",
+        "result": "changed"
+    }
+}
+
+# Job complete event
+{
+    "event": "playbook_on_stats",
+    "timestamp": "2026-01-15T10:05:00Z",
+    "data": {
+        "ok": {"10.0.1.10": 15, "10.0.1.11": 15},
+        "failures": {},
+        "unreachable": {}
+    }
+}
+```
+
+### Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| ansible-runner library | Official Red Hat library; handles process lifecycle, artifacts, events |
+| Event handler callback | Real-time streaming without polling; ansible-runner native support |
+| Redis Pub/Sub for events | Lightweight, no persistence needed; subscribers get live updates |
+| Temp private_data_dir | Isolation between jobs; clean credential handling |
+| Cleanup after job | Don't leak credentials or fill disk |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
 
 - [x] Data Model (MariaDB schema)
-- [ ] Worker Component Design
+- [x] Worker Component Design
 - [ ] Git Repository Caching Strategy
 - [ ] Credential Storage & Encryption
 - [ ] Error Handling & Retry Logic
@@ -552,6 +785,7 @@ Completed:
 - [x] API Design (endpoints, request/response schemas)
 - [x] Queue Abstraction (rq MVP with Celery migration path)
 - [x] Data Model (MariaDB schema)
+- [x] Worker Component Design
 
 ---
 
@@ -571,3 +805,4 @@ Completed:
 | 2026-01-15 | - | Initial draft |
 | 2026-01-15 | - | Simplified to rq-based architecture with Celery migration path |
 | 2026-01-15 | - | Added Data Model (MariaDB schema) |
+| 2026-01-17 | - | Added Worker Component Design |
