@@ -3,11 +3,11 @@
 **Date:** 2026-01-15
 **Status:** Draft - Under Review
 
-## Overview
+## 1. Overview
 
 An API service that exposes endpoints for other components to run Ansible playbooks. Designed for CI/CD pipelines and microservice orchestration with support for heavy concurrent load.
 
-## Requirements Summary
+## 2. Requirements Summary
 
 | Aspect | Decision |
 |--------|----------|
@@ -27,7 +27,7 @@ An API service that exposes endpoints for other components to run Ansible playbo
 
 ---
 
-## High-Level Architecture
+## 3. High-Level Architecture
 
 > **Design Note:** This architecture uses `rq` (Redis Queue) for the MVP to minimize complexity.
 > The queue interface is abstracted to allow migration to Celery when scale demands it.
@@ -170,7 +170,7 @@ def get_queue() -> JobQueue:
 
 ---
 
-## API Design
+## 4. API Design
 
 ### Core Endpoints
 
@@ -486,7 +486,7 @@ CI/CD packages playbooks into .tgz and uploads to Nexus.
 
 ---
 
-## Data Model (MariaDB Schema)
+## 5. Data Model (MariaDB Schema)
 
 ### Core Tables
 
@@ -591,7 +591,7 @@ CREATE TABLE job_host_results (
 
 ---
 
-## Worker Component Design
+## 6. Worker Component Design
 
 ### Worker Responsibilities
 
@@ -1085,7 +1085,7 @@ eventSource.onmessage = (e) => {
 
 ---
 
-## Playbook Source Services
+## 7. Playbook Source Services
 
 Workers support multiple source types for fetching playbooks. An abstraction layer handles the differences.
 
@@ -1323,7 +1323,7 @@ upload-to-s3:
 
 ---
 
-## Credential Storage & Encryption
+## 8. Credential Storage & Encryption
 
 ### Credential Types
 
@@ -1673,7 +1673,7 @@ credential_service = CredentialService(master_key)
 
 ---
 
-## Error Handling & Retry Logic
+## 9. Error Handling & Retry Logic
 
 ### Error Categories
 
@@ -1902,7 +1902,7 @@ ALTER TABLE jobs ADD COLUMN next_retry_at TIMESTAMP NULL;
 
 ---
 
-## Webhook Delivery
+## 10. Webhook Delivery
 
 ### What and Why
 
