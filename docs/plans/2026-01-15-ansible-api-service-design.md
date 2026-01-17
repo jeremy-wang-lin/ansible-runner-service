@@ -1902,6 +1902,219 @@ ALTER TABLE jobs ADD COLUMN next_retry_at TIMESTAMP NULL;
 
 ---
 
+## Webhook Delivery
+
+### What and Why
+
+A webhook is an HTTP callback - when a job completes, we POST the result to a URL the client specified.
+
+```
+┌─────────────────┐                      ┌─────────────────┐
+│  Ansible API    │   HTTP POST          │  Client System  │
+│  Service        │  ─────────────────►  │  (CI/CD, etc.)  │
+│                 │  "Job completed!"    │                 │
+└─────────────────┘                      └─────────────────┘
+```
+
+**Why webhooks instead of polling:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Polling | Simple client | Wastes resources, delayed notification |
+| Webhook | Efficient, immediate notification | Client must expose endpoint |
+
+### When Webhooks Are Sent
+
+| Event | Trigger |
+|-------|---------|
+| Job completed | Status becomes `success` or `failed` |
+| Job cancelled | User cancels a running/pending job |
+
+### Webhook Payload
+
+```json
+{
+  "event": "job.completed",
+  "timestamp": "2026-01-17T10:05:30Z",
+  "job": {
+    "id": "job-abc123",
+    "status": "success",
+    "created_at": "2026-01-17T10:00:00Z",
+    "started_at": "2026-01-17T10:00:05Z",
+    "finished_at": "2026-01-17T10:05:30Z",
+    "duration_seconds": 325,
+    "exit_code": 0,
+    "hosts": {
+      "ok": 2,
+      "failed": 0,
+      "unreachable": 0,
+      "skipped": 0
+    },
+    "log_url": "https://storage.example.com/logs/job-abc123/stdout.txt"
+  }
+}
+
+// Failed job includes error details
+{
+  "event": "job.completed",
+  "job": {
+    "id": "job-abc123",
+    "status": "failed",
+    "exit_code": 2,
+    "error": {
+      "type": "ansible_execution_failed",
+      "message": "Host 10.0.1.10 unreachable",
+      "retryable": false
+    },
+    "log_url": "https://storage.example.com/logs/job-abc123/stdout.txt"
+  }
+}
+```
+
+### Webhook Security (Signature Verification)
+
+**HTTP headers sent with webhook:**
+
+```
+POST /webhook/ansible HTTP/1.1
+Host: ci.example.com
+Content-Type: application/json
+X-Ansible-API-Event: job.completed
+X-Ansible-API-Signature: sha256=abc123...
+X-Ansible-API-Timestamp: 1705487130
+X-Ansible-API-Delivery: delivery-uuid-123
+```
+
+**Signature generation:**
+
+```python
+import hmac
+import hashlib
+
+def sign_webhook(payload: bytes, secret: str) -> str:
+    """Generate HMAC-SHA256 signature for webhook payload"""
+    signature = hmac.new(
+        secret.encode('utf-8'),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    return f"sha256={signature}"
+```
+
+**Receiver verification:**
+
+```python
+def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
+    expected = sign_webhook(payload, secret)
+    return hmac.compare_digest(signature, expected)
+```
+
+### Webhook Service Implementation
+
+```python
+# app/services/webhook.py
+import requests
+from app.config import WebhookConfig
+
+class WebhookService:
+    def send(self, job, webhook_secret: str = None):
+        """Send webhook with retry logic"""
+
+        payload = self._build_payload(job)
+        payload_bytes = json.dumps(payload).encode('utf-8')
+
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Ansible-API-Event': 'job.completed',
+            'X-Ansible-API-Timestamp': str(int(time.time())),
+            'X-Ansible-API-Delivery': str(uuid.uuid4()),
+        }
+
+        # Add signature if secret configured
+        if webhook_secret:
+            headers['X-Ansible-API-Signature'] = sign_webhook(payload_bytes, webhook_secret)
+
+        # Retry with backoff
+        last_error = None
+        for attempt in range(WebhookConfig.MAX_RETRIES + 1):
+            try:
+                response = self.session.post(
+                    job.callback_url,
+                    data=payload_bytes,
+                    headers=headers,
+                    timeout=WebhookConfig.TIMEOUT,
+                )
+
+                if response.status_code < 300:
+                    self._record_delivery(job.id, success=True, attempt=attempt)
+                    return True
+
+                # 4xx = don't retry (client error)
+                if 400 <= response.status_code < 500:
+                    self._record_delivery(job.id, success=False,
+                        error=f"Client error: {response.status_code}")
+                    return False
+
+                # 5xx = retry
+                last_error = f"Server error: {response.status_code}"
+
+            except requests.Timeout:
+                last_error = "Request timeout"
+            except requests.ConnectionError as e:
+                last_error = f"Connection error: {str(e)}"
+
+            # Backoff before retry
+            if attempt < WebhookConfig.MAX_RETRIES:
+                backoff = WebhookConfig.INITIAL_BACKOFF * (2 ** attempt)
+                time.sleep(min(backoff, WebhookConfig.MAX_BACKOFF))
+
+        # All retries failed
+        self._record_delivery(job.id, success=False, error=last_error)
+        return False
+```
+
+### Webhook Configuration
+
+```python
+class WebhookConfig:
+    MAX_RETRIES = 3
+    TIMEOUT = 10                  # seconds
+    INITIAL_BACKOFF = 5           # seconds
+    MAX_BACKOFF = 60              # seconds
+```
+
+### Database: Delivery Tracking
+
+```sql
+CREATE TABLE webhook_deliveries (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_id VARCHAR(36) NOT NULL,
+    success BOOLEAN NOT NULL,
+    attempt INT NOT NULL DEFAULT 0,
+    error TEXT NULL,
+    delivered_at TIMESTAMP NOT NULL,
+
+    INDEX idx_job_id (job_id),
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+
+-- Add webhook_secret to api_keys table
+ALTER TABLE api_keys ADD COLUMN webhook_secret VARCHAR(255) NULL;
+```
+
+### Design Decisions
+
+| Decision | Approach |
+|----------|----------|
+| Signature | HMAC-SHA256, same pattern as GitHub/Stripe webhooks |
+| Retry | 3 retries with exponential backoff (5s → 60s) |
+| 4xx response | Don't retry (client's problem) |
+| 5xx response | Retry with backoff |
+| Timeout | 10 seconds per attempt |
+| Delivery tracking | Store in DB for audit/debugging |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
@@ -1912,7 +2125,7 @@ The following sections need to be designed:
 - [ ] Git Repository Caching Strategy (skipped for MVP)
 - [x] Credential Storage & Encryption
 - [x] Error Handling & Retry Logic
-- [ ] Webhook Delivery
+- [x] Webhook Delivery
 - [ ] Kubernetes Deployment Architecture
 - [ ] Observability (metrics, tracing, logging)
 - [ ] Security Considerations
@@ -1927,6 +2140,7 @@ Completed:
 - [x] Playbook Source Services (Git, Nexus, S3)
 - [x] Credential Storage & Encryption
 - [x] Error Handling & Retry Logic
+- [x] Webhook Delivery
 
 ---
 
@@ -1952,3 +2166,4 @@ Completed:
 | 2026-01-17 | - | Added Playbook Source Services (Git, Nexus, S3) with bundled artifact support |
 | 2026-01-17 | - | Added Credential Storage & Encryption with envelope encryption and AAD |
 | 2026-01-17 | - | Added Error Handling & Retry Logic |
+| 2026-01-17 | - | Added Webhook Delivery |
