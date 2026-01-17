@@ -2115,6 +2115,317 @@ ALTER TABLE api_keys ADD COLUMN webhook_secret VARCHAR(255) NULL;
 
 ---
 
+## 11. Deployment Architecture
+
+### Components Overview
+
+| Component | Type | Replicas (MVP) | Scaling |
+|-----------|------|----------------|---------|
+| API | Deployment | 2-3 | HPA on CPU/requests |
+| Worker | Deployment | 2-5 | HPA on queue depth |
+| Redis | StatefulSet | 1 (or managed) | Vertical |
+| MariaDB | StatefulSet | 1 (or managed) | Vertical |
+| MinIO | StatefulSet | 1 (or managed S3) | - |
+
+### Kubernetes Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Kubernetes Cluster                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐      ┌─────────────────────────────────────────────┐  │
+│  │   Ingress    │      │              Namespace: ansible-api         │  │
+│  │  Controller  │      │                                             │  │
+│  └──────┬───────┘      │  ┌─────────────────────────────────────┐   │  │
+│         │              │  │         API Deployment               │   │  │
+│         │              │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐│   │  │
+│         └──────────────┼─►│  │ api-0   │ │ api-1   │ │ api-2   ││   │  │
+│                        │  │  └─────────┘ └─────────┘ └─────────┘│   │  │
+│                        │  │              Service: api-svc        │   │  │
+│                        │  └─────────────────┬───────────────────┘   │  │
+│                        │                    │                        │  │
+│                        │                    ▼                        │  │
+│                        │  ┌─────────────────────────────────────┐   │  │
+│                        │  │        Worker Deployment             │   │  │
+│                        │  │  ┌─────────┐ ┌─────────┐            │   │  │
+│                        │  │  │worker-0 │ │worker-1 │ ...        │   │  │
+│                        │  │  └─────────┘ └─────────┘            │   │  │
+│                        │  └─────────────────┬───────────────────┘   │  │
+│                        │                    │                        │  │
+│                        │    ┌───────────────┼───────────────┐       │  │
+│                        │    ▼               ▼               ▼       │  │
+│                        │  ┌──────┐    ┌─────────┐    ┌─────────┐   │  │
+│                        │  │Redis │    │ MariaDB │    │  MinIO  │   │  │
+│                        │  └──────┘    └─────────┘    └─────────┘   │  │
+│                        │  StatefulSet  StatefulSet   StatefulSet   │  │
+│                        │                                             │  │
+│                        └─────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### API Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible-api
+  namespace: ansible-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ansible-api
+      component: api
+  template:
+    metadata:
+      labels:
+        app: ansible-api
+        component: api
+    spec:
+      containers:
+      - name: api
+        image: ansible-api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ansible-api-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: ansible-api-secrets
+              key: redis-url
+        - name: MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ansible-api-master-key
+              key: master-key
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 5
+```
+
+### Worker Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible-worker
+  namespace: ansible-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ansible-api
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: ansible-api
+        component: worker
+    spec:
+      containers:
+      - name: worker
+        image: ansible-api:latest
+        command: ["rq", "worker", "--url", "$(REDIS_URL)"]
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ansible-api-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: ansible-api-secrets
+              key: redis-url
+        - name: MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ansible-api-master-key
+              key: master-key
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+```
+
+### Horizontal Pod Autoscaler
+
+```yaml
+# API HPA - scale on CPU
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ansible-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ansible-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+# Worker HPA - scale on queue depth
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ansible-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ansible-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: redis_queue_length
+      target:
+        type: AverageValue
+        averageValue: "5"
+```
+
+### Local Development (Docker Compose)
+
+For local development, use Docker Compose instead of Kubernetes:
+
+```yaml
+# docker-compose.yaml
+version: '3.8'
+
+services:
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=mysql://ansible:ansible@mariadb:3306/ansible_api
+      - REDIS_URL=redis://redis:6379/0
+      - MASTER_KEY=dev-master-key-32-bytes-long!!
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      - mariadb
+      - redis
+      - minio
+
+  worker:
+    build: .
+    command: rq worker --url redis://redis:6379/0 --with-scheduler
+    environment:
+      - DATABASE_URL=mysql://ansible:ansible@mariadb:3306/ansible_api
+      - REDIS_URL=redis://redis:6379/0
+      - MASTER_KEY=dev-master-key-32-bytes-long!!
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      - mariadb
+      - redis
+      - minio
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mariadb:
+    image: mariadb:10.11
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=ansible_api
+      - MYSQL_USER=ansible
+      - MYSQL_PASSWORD=ansible
+    volumes:
+      - mariadb-data:/var/lib/mysql
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+
+volumes:
+  mariadb-data:
+```
+
+### Quick Start Commands
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f api worker
+
+# Scale workers locally
+docker-compose up -d --scale worker=3
+
+# Stop all
+docker-compose down
+
+# Reset (remove data)
+docker-compose down -v
+```
+
+### Design Decisions
+
+| Decision | Approach |
+|----------|----------|
+| Local dev | Docker Compose (simpler than K8s) |
+| API scaling | HPA on CPU utilization (70%) |
+| Worker scaling | HPA on queue depth |
+| Stateful services | StatefulSet or managed services |
+| Secrets | K8s Secrets (MVP); Vault for production |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
@@ -2126,7 +2437,7 @@ The following sections need to be designed:
 - [x] Credential Storage & Encryption
 - [x] Error Handling & Retry Logic
 - [x] Webhook Delivery
-- [ ] Kubernetes Deployment Architecture
+- [x] Deployment Architecture (K8s + Docker Compose)
 - [ ] Observability (metrics, tracing, logging)
 - [ ] Security Considerations
 - [ ] API Rate Limiting
@@ -2141,6 +2452,7 @@ Completed:
 - [x] Credential Storage & Encryption
 - [x] Error Handling & Retry Logic
 - [x] Webhook Delivery
+- [x] Deployment Architecture (K8s + Docker Compose)
 
 ---
 
@@ -2167,3 +2479,4 @@ Completed:
 | 2026-01-17 | - | Added Credential Storage & Encryption with envelope encryption and AAD |
 | 2026-01-17 | - | Added Error Handling & Retry Logic |
 | 2026-01-17 | - | Added Webhook Delivery |
+| 2026-01-17 | - | Added Deployment Architecture (K8s + Docker Compose for local dev) |
