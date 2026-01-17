@@ -427,11 +427,116 @@ GET    /metrics                        # Prometheus metrics
 
 ---
 
+## Data Model (MariaDB Schema)
+
+### Core Tables
+
+```sql
+-- API Keys for authentication
+CREATE TABLE api_keys (
+    id VARCHAR(36) PRIMARY KEY,           -- UUID
+    name VARCHAR(255) NOT NULL UNIQUE,    -- Human-readable name
+    key_hash VARCHAR(255) NOT NULL,       -- bcrypt hash of API key
+    description TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP NULL,
+
+    INDEX idx_key_hash (key_hash),
+    INDEX idx_is_active (is_active)
+);
+
+-- Stored credentials (encrypted)
+CREATE TABLE credentials (
+    id VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,    -- Reference name
+    type ENUM('ssh_key', 'password', 'vault_password',
+              'cloud_aws', 'cloud_gcp', 'cloud_azure',
+              'git_ssh', 'git_token', 'galaxy_token') NOT NULL,
+    encrypted_data BLOB NOT NULL,         -- AES-256 encrypted JSON
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_by VARCHAR(36),               -- api_key.id
+
+    INDEX idx_name (name),
+    INDEX idx_type (type)
+);
+
+-- Job records
+CREATE TABLE jobs (
+    id VARCHAR(36) PRIMARY KEY,           -- UUID
+    status ENUM('pending', 'running', 'success', 'failed', 'cancelled') NOT NULL,
+
+    -- Request details (stored as JSON for flexibility)
+    source JSON NOT NULL,                 -- playbook/role source config
+    inventory JSON NOT NULL,              -- inventory config
+    credentials JSON NOT NULL,            -- credential references (not secrets)
+    extra_vars JSON,                      -- extra variables
+    options JSON,                         -- execution options
+
+    -- Timing
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP NULL,
+    finished_at TIMESTAMP NULL,
+
+    -- Results summary
+    exit_code INT NULL,
+    hosts_ok INT DEFAULT 0,
+    hosts_failed INT DEFAULT 0,
+    hosts_unreachable INT DEFAULT 0,
+    hosts_skipped INT DEFAULT 0,
+
+    -- Log storage
+    log_path VARCHAR(512),                -- Object storage path
+
+    -- Callback
+    callback_url VARCHAR(1024),
+    callback_sent BOOLEAN DEFAULT FALSE,
+
+    -- Tracking
+    api_key_id VARCHAR(36),
+    worker_id VARCHAR(255),               -- Which worker processed this
+
+    INDEX idx_status (status),
+    INDEX idx_created_at (created_at),
+    INDEX idx_api_key (api_key_id),
+    FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+);
+
+-- Per-host results (for detailed reporting)
+CREATE TABLE job_host_results (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_id VARCHAR(36) NOT NULL,
+    hostname VARCHAR(255) NOT NULL,
+    status ENUM('ok', 'failed', 'unreachable', 'skipped') NOT NULL,
+    tasks_ok INT DEFAULT 0,
+    tasks_failed INT DEFAULT 0,
+    tasks_changed INT DEFAULT 0,
+    tasks_skipped INT DEFAULT 0,
+    error_message TEXT,
+
+    INDEX idx_job_id (job_id),
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+```
+
+### Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| JSON for request fields | Flexible schema as API evolves; avoids migrations for new options |
+| Separate host results table | Query failed hosts across jobs; detailed audit trail |
+| Encrypted credentials blob | Single encrypted field simpler than per-column encryption |
+| No job events table | Live events in Redis; full logs in Object Storage |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
 
-- [ ] Data Model (MariaDB schema)
+- [x] Data Model (MariaDB schema)
 - [ ] Worker Component Design
 - [ ] Git Repository Caching Strategy
 - [ ] Credential Storage & Encryption
@@ -446,6 +551,7 @@ Completed:
 - [x] High-Level Architecture
 - [x] API Design (endpoints, request/response schemas)
 - [x] Queue Abstraction (rq MVP with Celery migration path)
+- [x] Data Model (MariaDB schema)
 
 ---
 
@@ -464,3 +570,4 @@ Completed:
 |------|--------|---------|
 | 2026-01-15 | - | Initial draft |
 | 2026-01-15 | - | Simplified to rq-based architecture with Celery migration path |
+| 2026-01-15 | - | Added Data Model (MariaDB schema) |
