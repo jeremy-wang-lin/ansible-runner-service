@@ -2872,6 +2872,745 @@ groups:
 
 ---
 
+## 13. Security Considerations
+
+This section covers security measures across all layers of the Ansible API Service.
+
+### Security Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Security Layers                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
+│  │  Network    │  │   Auth &    │  │   Data      │  │  Runtime    │    │
+│  │  Security   │  │   AuthZ     │  │  Protection │  │  Security   │    │
+│  ├─────────────┤  ├─────────────┤  ├─────────────┤  ├─────────────┤    │
+│  │ TLS 1.3     │  │ API Keys    │  │ Encryption  │  │ Container   │    │
+│  │ mTLS        │  │ RBAC        │  │ at rest     │  │ isolation   │    │
+│  │ Network     │  │ Rate        │  │ Input       │  │ Read-only   │    │
+│  │ policies    │  │ limiting    │  │ validation  │  │ filesystem  │    │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 1. Network Security
+
+#### TLS Configuration
+
+All external traffic must use TLS 1.2+ (prefer 1.3):
+
+```yaml
+# Ingress TLS configuration
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ansible-api-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+spec:
+  tls:
+  - hosts:
+    - ansible-api.example.com
+    secretName: ansible-api-tls
+```
+
+#### Internal Communication
+
+| Connection | Protocol | Notes |
+|------------|----------|-------|
+| API → Redis | TLS optional | Use if Redis is external |
+| API → MariaDB | TLS required | Always encrypt DB connections |
+| API → Object Storage | TLS required | HTTPS for S3/MinIO |
+| Worker → Git | SSH or HTTPS | SSH keys or tokens |
+| Worker → Target Hosts | SSH | Ansible connections |
+
+#### Kubernetes Network Policies
+
+```yaml
+# Restrict worker egress to only necessary destinations
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-egress
+  namespace: ansible-api
+spec:
+  podSelector:
+    matchLabels:
+      component: worker
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow Redis
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow MariaDB
+  - to:
+    - podSelector:
+        matchLabels:
+          app: mariadb
+    ports:
+    - protocol: TCP
+      port: 3306
+  # Allow external Git/Nexus/S3 (configure specific CIDRs in production)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8      # Block internal ranges except explicitly allowed
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 22
+```
+
+---
+
+### 2. Authentication
+
+#### API Key Security
+
+```python
+# API key format: prefix + random bytes
+# Example: aas_7f3k9x2m1p4q8r5t6y0w...
+# Prefix "aas_" = Ansible API Service, helps identify leaked keys
+
+import secrets
+import hashlib
+
+def generate_api_key() -> tuple[str, str]:
+    """Generate API key and its hash for storage."""
+    # 32 bytes = 256 bits of entropy
+    raw_key = secrets.token_urlsafe(32)
+    api_key = f"aas_{raw_key}"
+
+    # Store only the hash
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+
+    return api_key, key_hash  # Return key to user once, store hash
+
+def verify_api_key(provided_key: str, stored_hash: str) -> bool:
+    """Verify API key against stored hash."""
+    provided_hash = hashlib.sha256(provided_key.encode()).hexdigest()
+    return secrets.compare_digest(provided_hash, stored_hash)
+```
+
+#### API Key Best Practices
+
+| Practice | Implementation |
+|----------|----------------|
+| Never log full keys | Log only first 8 chars: `aas_7f3k****` |
+| Hash before storage | SHA-256, not bcrypt (we need fast lookups) |
+| Rotate regularly | Support key rotation without downtime |
+| Scope keys | Different keys for different environments |
+| Track usage | Log `last_used_at` for each key |
+
+#### Authentication Middleware
+
+```python
+# app/middleware/auth.py
+from fastapi import Request, HTTPException
+from fastapi.security import APIKeyHeader
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def authenticate(request: Request) -> APIKey:
+    """Authenticate request via API key."""
+
+    # Skip auth for health endpoints
+    if request.url.path in ["/health", "/ready", "/metrics"]:
+        return None
+
+    api_key = request.headers.get("X-API-Key")
+
+    if not api_key:
+        raise HTTPException(401, "Missing API key")
+
+    if not api_key.startswith("aas_"):
+        raise HTTPException(401, "Invalid API key format")
+
+    # Lookup by hash
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    db_key = await db.api_keys.get_by_hash(key_hash)
+
+    if not db_key or not db_key.is_active:
+        # Use constant-time comparison even for missing keys
+        # to prevent timing attacks
+        raise HTTPException(401, "Invalid API key")
+
+    # Update last used (async, don't block request)
+    asyncio.create_task(db.api_keys.update_last_used(db_key.id))
+
+    return db_key
+```
+
+---
+
+### 3. Authorization (RBAC)
+
+#### Permission Model
+
+```python
+class Permission(Enum):
+    # Job permissions
+    JOB_SUBMIT = "job:submit"
+    JOB_READ = "job:read"
+    JOB_CANCEL = "job:cancel"
+    JOB_READ_LOGS = "job:read_logs"
+
+    # Credential permissions
+    CREDENTIAL_CREATE = "credential:create"
+    CREDENTIAL_READ = "credential:read"
+    CREDENTIAL_DELETE = "credential:delete"
+
+    # Admin permissions
+    API_KEY_MANAGE = "api_key:manage"
+
+class Role(Enum):
+    # Predefined roles
+    ADMIN = "admin"           # Full access
+    OPERATOR = "operator"     # Submit/manage jobs, read credentials
+    VIEWER = "viewer"         # Read-only access to jobs
+    CI_CD = "ci_cd"          # Submit jobs only (for pipelines)
+
+ROLE_PERMISSIONS = {
+    Role.ADMIN: [p for p in Permission],  # All permissions
+    Role.OPERATOR: [
+        Permission.JOB_SUBMIT,
+        Permission.JOB_READ,
+        Permission.JOB_CANCEL,
+        Permission.JOB_READ_LOGS,
+        Permission.CREDENTIAL_READ,
+    ],
+    Role.VIEWER: [
+        Permission.JOB_READ,
+        Permission.JOB_READ_LOGS,
+    ],
+    Role.CI_CD: [
+        Permission.JOB_SUBMIT,
+        Permission.JOB_READ,
+    ],
+}
+```
+
+#### Database Schema
+
+```sql
+-- Add role to api_keys table
+ALTER TABLE api_keys ADD COLUMN role ENUM('admin', 'operator', 'viewer', 'ci_cd')
+    NOT NULL DEFAULT 'ci_cd';
+
+-- Optional: fine-grained permissions override
+CREATE TABLE api_key_permissions (
+    api_key_id VARCHAR(36) NOT NULL,
+    permission VARCHAR(50) NOT NULL,
+    granted BOOLEAN NOT NULL DEFAULT TRUE,  -- Can deny specific permissions
+
+    PRIMARY KEY (api_key_id, permission),
+    FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+);
+```
+
+#### Authorization Check
+
+```python
+# app/middleware/authz.py
+from functools import wraps
+
+def require_permission(permission: Permission):
+    """Decorator to check permission before endpoint execution."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, api_key: APIKey, **kwargs):
+            if not has_permission(api_key, permission):
+                raise HTTPException(403, f"Permission denied: {permission.value}")
+            return await func(*args, api_key=api_key, **kwargs)
+        return wrapper
+    return decorator
+
+def has_permission(api_key: APIKey, permission: Permission) -> bool:
+    """Check if API key has permission."""
+    # Get role permissions
+    role_perms = ROLE_PERMISSIONS.get(api_key.role, [])
+
+    # Check overrides
+    override = db.api_key_permissions.get(api_key.id, permission.value)
+    if override is not None:
+        return override.granted
+
+    return permission in role_perms
+
+# Usage in endpoint
+@router.post("/api/v1/jobs")
+@require_permission(Permission.JOB_SUBMIT)
+async def submit_job(request: JobRequest, api_key: APIKey = Depends(authenticate)):
+    ...
+```
+
+---
+
+### 4. Input Validation
+
+#### Request Validation with Pydantic
+
+```python
+# app/schemas/job.py
+from pydantic import BaseModel, Field, validator
+import re
+
+class GitSource(BaseModel):
+    type: Literal["playbook", "role"]
+    repo: str = Field(..., max_length=500)
+    branch: str = Field(..., max_length=100)
+    path: str = Field(..., max_length=500)
+    git_credential: str | None = Field(None, max_length=100)
+
+    @validator('repo')
+    def validate_repo(cls, v):
+        # Allow only valid Git URLs
+        if not re.match(r'^(git@|https://)[a-zA-Z0-9._-]+[:/]', v):
+            raise ValueError('Invalid Git repository URL')
+        return v
+
+    @validator('branch')
+    def validate_branch(cls, v):
+        # Prevent command injection via branch name
+        if not re.match(r'^[a-zA-Z0-9._/-]+$', v):
+            raise ValueError('Invalid branch name')
+        return v
+
+    @validator('path')
+    def validate_path(cls, v):
+        # Prevent path traversal
+        if '..' in v or v.startswith('/'):
+            raise ValueError('Invalid path: no traversal or absolute paths')
+        if not v.endswith(('.yml', '.yaml')):
+            raise ValueError('Playbook must be .yml or .yaml file')
+        return v
+
+class InlineInventory(BaseModel):
+    type: Literal["inline"]
+    hosts: list[str] = Field(..., max_items=1000)
+
+    @validator('hosts', each_item=True)
+    def validate_host(cls, v):
+        # Validate hostname/IP format
+        ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+        hostname_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9.-]+$'
+        if not (re.match(ip_pattern, v) or re.match(hostname_pattern, v)):
+            raise ValueError(f'Invalid host: {v}')
+        return v
+
+class JobRequest(BaseModel):
+    source: GitSource | NexusSource | S3Source
+    inventory: InlineInventory | DynamicInventory | GitInventory
+    credentials: dict[str, str] = Field(default_factory=dict)
+    extra_vars: dict = Field(default_factory=dict)
+    options: JobOptions = Field(default_factory=JobOptions)
+
+    @validator('extra_vars')
+    def validate_extra_vars(cls, v):
+        # Limit size to prevent DoS
+        if len(json.dumps(v)) > 65536:  # 64KB
+            raise ValueError('extra_vars too large')
+        return v
+```
+
+#### Preventing Injection Attacks
+
+| Attack Vector | Mitigation |
+|---------------|------------|
+| Command injection via branch | Validate branch name format, shell-escape |
+| Path traversal | Block `..` and absolute paths |
+| YAML injection | Use safe YAML loader, validate structure |
+| SQL injection | Use parameterized queries (SQLAlchemy) |
+| Extra vars injection | Size limits, schema validation |
+
+```python
+# Safe subprocess execution
+import shlex
+import subprocess
+
+def safe_git_clone(repo: str, branch: str, target: str):
+    """Clone repo with proper escaping."""
+    # Validate inputs first (done by Pydantic)
+
+    # Use list form to avoid shell injection
+    cmd = [
+        "git", "clone",
+        "--branch", branch,  # branch already validated
+        "--depth", "1",
+        repo,
+        target
+    ]
+
+    # Never use shell=True with user input
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        timeout=300,
+        check=True
+    )
+    return result
+```
+
+---
+
+### 5. Credential Protection
+
+(Summary - full details in Section 8)
+
+| Layer | Protection |
+|-------|------------|
+| In transit | TLS for all connections |
+| At rest | AES-256-GCM envelope encryption |
+| In memory | Clear after use, secure memory where available |
+| In logs | Never log credential values |
+| In API | Never return decrypted credentials |
+| Backup | Encrypted data only; master key separate |
+
+#### Worker Credential Handling
+
+```python
+def _prepare_credentials(self, private_data_dir: str, creds: dict):
+    """Write credentials to ansible-runner directory securely."""
+
+    env_dir = Path(private_data_dir) / "env"
+    env_dir.mkdir(mode=0o700, exist_ok=True)
+
+    # Write SSH key with restrictive permissions
+    if 'ssh_key' in creds:
+        ssh_key_path = env_dir / "ssh_key"
+        ssh_key_path.write_text(creds['ssh_key'])
+        ssh_key_path.chmod(0o600)
+
+    # Write passwords to env file
+    env_vars = {}
+    if 'become_password' in creds:
+        env_vars['ANSIBLE_BECOME_PASSWORD'] = creds['become_password']
+
+    if env_vars:
+        (env_dir / "envvars").write_text(
+            "\n".join(f"{k}={v}" for k, v in env_vars.items())
+        )
+
+def _cleanup_credentials(self, private_data_dir: str):
+    """Securely remove credential files after job completion."""
+    import shutil
+
+    env_dir = Path(private_data_dir) / "env"
+    if env_dir.exists():
+        # Overwrite files before deletion
+        for f in env_dir.iterdir():
+            if f.is_file():
+                size = f.stat().st_size
+                f.write_bytes(b'\x00' * size)  # Zero out
+
+        shutil.rmtree(private_data_dir)
+```
+
+---
+
+### 6. Container Security
+
+#### Secure Container Configuration
+
+```yaml
+# Deployment security context
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansible-worker
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: worker
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        # Writable temp directory for job execution
+        - name: tmp
+          mountPath: /tmp
+        # Writable for ansible-runner artifacts
+        - name: runner-data
+          mountPath: /home/ansible/.ansible
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: runner-data
+        emptyDir:
+          sizeLimit: 500Mi
+```
+
+#### Dockerfile Security
+
+```dockerfile
+FROM python:3.11-slim
+
+# Don't run as root
+RUN useradd -m -u 1000 ansible
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY --chown=ansible:ansible app /app
+
+USER ansible
+WORKDIR /app
+
+# No shell needed for production
+ENTRYPOINT ["python", "-m", "uvicorn", "main:app"]
+```
+
+---
+
+### 7. Audit Logging
+
+#### What to Audit
+
+| Event | Fields | Retention |
+|-------|--------|-----------|
+| API key created | key_name, created_by, role | Forever |
+| API key deleted | key_name, deleted_by | Forever |
+| Job submitted | job_id, api_key_name, source | 1 year |
+| Job completed | job_id, status, duration | 1 year |
+| Credential created | credential_name, type, created_by | Forever |
+| Credential accessed | credential_name, job_id, accessed_by | 1 year |
+| Auth failure | ip_address, attempted_key_prefix | 90 days |
+| Permission denied | api_key_name, permission, endpoint | 90 days |
+
+#### Audit Log Implementation
+
+```python
+# app/services/audit.py
+import structlog
+from datetime import datetime
+
+audit_logger = structlog.get_logger("audit")
+
+class AuditService:
+    async def log(self, event: str, **context):
+        """Write audit log entry."""
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": event,
+            **context
+        }
+
+        # Log to structured logger (goes to separate audit stream)
+        audit_logger.info(event, **context)
+
+        # Also persist to database for querying
+        await db.audit_logs.create(
+            event=event,
+            context=json.dumps(context),
+            created_at=datetime.utcnow()
+        )
+
+# Usage
+await audit.log("credential_accessed",
+    credential_name="prod-ssh-key",
+    job_id=job.id,
+    api_key_name=api_key.name
+)
+```
+
+#### Audit Log Database
+
+```sql
+CREATE TABLE audit_logs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    event VARCHAR(100) NOT NULL,
+    context JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+
+    INDEX idx_event (event),
+    INDEX idx_created_at (created_at)
+) PARTITION BY RANGE (UNIX_TIMESTAMP(created_at)) (
+    -- Partition by month for easier retention management
+    PARTITION p_2026_01 VALUES LESS THAN (UNIX_TIMESTAMP('2026-02-01')),
+    PARTITION p_2026_02 VALUES LESS THAN (UNIX_TIMESTAMP('2026-03-01')),
+    -- ... add more partitions
+    PARTITION p_future VALUES LESS THAN MAXVALUE
+);
+```
+
+---
+
+### 8. Playbook Execution Security
+
+#### Restricting Ansible Capabilities
+
+```python
+# app/workers/ansible_job.py
+
+def _build_ansible_config(self, options: dict) -> dict:
+    """Build ansible.cfg with security restrictions."""
+
+    config = {
+        'defaults': {
+            # Disable dangerous features
+            'allow_world_readable_tmpfiles': 'False',
+            'pipelining': 'True',  # More secure, avoids temp files on target
+
+            # Restrict callback plugins (prevent data exfiltration)
+            'callback_whitelist': 'default,minimal',
+
+            # Limit fact gathering
+            'gathering': options.get('fact_gathering', 'smart'),
+
+            # Connection timeout
+            'timeout': str(min(options.get('timeout', 30), 120)),
+        },
+        'privilege_escalation': {
+            # Control become behavior
+            'become': 'True' if options.get('become') else 'False',
+            'become_method': options.get('become_method', 'sudo'),
+        }
+    }
+
+    return config
+```
+
+#### Module Restrictions (Optional)
+
+For high-security environments, restrict which Ansible modules can be used:
+
+```python
+# app/config.py
+BLOCKED_ANSIBLE_MODULES = [
+    'raw',           # Arbitrary command execution
+    'script',        # Run arbitrary scripts
+    'shell',         # Use command instead (more restrictive)
+    'expect',        # Interactive commands
+]
+
+# In worker, scan playbook before execution
+def _validate_playbook(self, playbook_path: str):
+    """Check playbook for blocked modules."""
+    with open(playbook_path) as f:
+        playbook = yaml.safe_load(f)
+
+    for play in playbook:
+        for task in play.get('tasks', []):
+            for module in BLOCKED_ANSIBLE_MODULES:
+                if module in task:
+                    raise PermanentError(
+                        "blocked_module",
+                        f"Module '{module}' is not allowed"
+                    )
+```
+
+---
+
+### 9. Secret Scanning
+
+#### Prevent Secrets in Logs
+
+```python
+# app/logging.py
+import re
+
+SECRET_PATTERNS = [
+    r'password["\']?\s*[:=]\s*["\']?[^"\']+',
+    r'api[_-]?key["\']?\s*[:=]\s*["\']?[^"\']+',
+    r'secret["\']?\s*[:=]\s*["\']?[^"\']+',
+    r'token["\']?\s*[:=]\s*["\']?[^"\']+',
+    r'-----BEGIN [A-Z]+ PRIVATE KEY-----',
+]
+
+def redact_secrets(message: str) -> str:
+    """Redact potential secrets from log messages."""
+    for pattern in SECRET_PATTERNS:
+        message = re.sub(pattern, '[REDACTED]', message, flags=re.IGNORECASE)
+    return message
+
+# Custom structlog processor
+def secret_redactor(logger, method_name, event_dict):
+    """Structlog processor to redact secrets."""
+    for key, value in event_dict.items():
+        if isinstance(value, str):
+            event_dict[key] = redact_secrets(value)
+    return event_dict
+```
+
+---
+
+### 10. Security Checklist
+
+| Category | Item | Status |
+|----------|------|--------|
+| **Network** | TLS 1.2+ for external traffic | Required |
+| | Network policies restrict pod egress | Required |
+| | Internal services use TLS | Recommended |
+| **Auth** | API keys hashed before storage | Required |
+| | Keys never logged in full | Required |
+| | Constant-time comparison | Required |
+| **AuthZ** | RBAC with least privilege | Required |
+| | Permission checks on all endpoints | Required |
+| **Input** | All inputs validated (Pydantic) | Required |
+| | Path traversal blocked | Required |
+| | Size limits on payloads | Required |
+| **Credentials** | Encrypted at rest (AES-256-GCM) | Required |
+| | Master key in external store | Required |
+| | Cleared from memory after use | Recommended |
+| **Container** | Non-root user | Required |
+| | Read-only filesystem | Required |
+| | Capabilities dropped | Required |
+| **Audit** | All security events logged | Required |
+| | Logs tamper-evident | Recommended |
+| **Playbooks** | Dangerous modules blocked | Optional |
+| | Playbook scanning | Optional |
+
+---
+
+### Design Decisions
+
+| Decision | Approach |
+|----------|----------|
+| API key format | Prefixed (`aas_`) for easy identification |
+| Key storage | SHA-256 hash (fast lookups, no auth delays) |
+| Authorization | Role-based with optional fine-grained overrides |
+| Input validation | Pydantic models with custom validators |
+| Container security | Non-root, read-only FS, dropped capabilities |
+| Audit logging | Structured logs + database for querying |
+| Secret redaction | Regex patterns in logging pipeline |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
@@ -2885,7 +3624,7 @@ The following sections need to be designed:
 - [x] Webhook Delivery
 - [x] Deployment Architecture (K8s + Docker Compose)
 - [x] Observability (metrics, tracing, logging)
-- [ ] Security Considerations
+- [x] Security Considerations
 - [ ] API Rate Limiting
 
 Completed:
@@ -2927,3 +3666,4 @@ Completed:
 | 2026-01-17 | - | Added Webhook Delivery |
 | 2026-01-17 | - | Added Deployment Architecture (K8s + Docker Compose for local dev) |
 | 2026-01-18 | - | Added Observability (combined v1 implementation details with v2 production structure) |
+| 2026-01-18 | - | Added Security Considerations (network, auth, RBAC, input validation, audit logging) |
