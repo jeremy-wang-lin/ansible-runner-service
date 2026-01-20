@@ -8,7 +8,7 @@ from ansible_runner_service.schemas import JobRequest, JobResponse
 
 app = FastAPI(title="Ansible Runner Service")
 
-PLAYBOOKS_DIR = Path(__file__).parent.parent.parent.parent / "playbooks"
+PLAYBOOKS_DIR = Path(__file__).parent.parent.parent / "playbooks"
 
 
 def get_playbooks_dir() -> Path:
@@ -26,6 +26,7 @@ def submit_job(
     if ".." in request.playbook or request.playbook.startswith("/"):
         raise HTTPException(status_code=400, detail="Invalid playbook name")
 
+    print(f"Playbook path: {playbooks_dir}")
     playbook_path = playbooks_dir / request.playbook
 
     if not playbook_path.exists():
