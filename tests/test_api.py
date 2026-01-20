@@ -55,3 +55,21 @@ class TestPostJobs:
 
         assert response.status_code == 200
         assert "Hello, Claude!" in response.json()["stdout"]
+
+    async def test_playbook_not_found(self, client: AsyncClient):
+        response = await client.post(
+            "/api/v1/jobs",
+            json={"playbook": "nonexistent.yml"},
+        )
+
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()
+
+    async def test_path_traversal_blocked(self, client: AsyncClient):
+        response = await client.post(
+            "/api/v1/jobs",
+            json={"playbook": "../etc/passwd"},
+        )
+
+        assert response.status_code == 400
+        assert "invalid" in response.json()["detail"].lower()

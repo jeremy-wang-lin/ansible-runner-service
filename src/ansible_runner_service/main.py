@@ -22,6 +22,10 @@ def submit_job(
     playbooks_dir: Path = Depends(get_playbooks_dir),
 ) -> JobResponse:
     """Submit a playbook job for execution."""
+    # Block path traversal attempts
+    if ".." in request.playbook or request.playbook.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid playbook name")
+
     playbook_path = playbooks_dir / request.playbook
 
     if not playbook_path.exists():
