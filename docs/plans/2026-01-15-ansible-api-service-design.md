@@ -3611,6 +3611,253 @@ def secret_redactor(logger, method_name, event_dict):
 
 ---
 
+## 14. API Rate Limiting
+
+This section covers how we protect the API from abuse and ensure fair resource usage across clients.
+
+### Why Rate Limiting?
+
+| Concern | Risk without rate limiting |
+|---------|---------------------------|
+| DoS protection | Single client could overwhelm the service |
+| Fair usage | One heavy user starves others |
+| Cost control | Prevents runaway job submissions |
+| Stability | Protects downstream systems (Redis, workers, DB) |
+
+### Rate Limiting Strategy
+
+**Two-tier approach:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Tier 1: API Request Rate                      │
+│         Limits how fast a client can call ANY endpoint          │
+│         Example: 100 requests/minute per API key                │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Tier 2: Job Submission Rate                   │
+│         Limits how many jobs can be submitted/running           │
+│         Example: 50 concurrent jobs per API key                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Default Limits
+
+| Limit | Default | Per |
+|-------|---------|-----|
+| API requests | 100/minute | API key |
+| Job submissions | 20/minute | API key |
+| Concurrent jobs | 50 | API key |
+| Max job timeout | 1 hour | Job |
+
+### Implementation (Redis-based Sliding Window)
+
+```python
+# app/middleware/rate_limit.py
+import time
+from redis import Redis
+from fastapi import HTTPException, Request
+
+class RateLimiter:
+    def __init__(self, redis: Redis):
+        self.redis = redis
+
+    async def check_rate_limit(self, api_key_id: str, limit_type: str):
+        """
+        Sliding window rate limiting using Redis sorted sets.
+        """
+        limits = {
+            'api_requests': {'max': 100, 'window': 60},      # 100/min
+            'job_submissions': {'max': 20, 'window': 60},    # 20/min
+        }
+
+        config = limits[limit_type]
+        key = f"ratelimit:{api_key_id}:{limit_type}"
+        now = time.time()
+        window_start = now - config['window']
+
+        pipe = self.redis.pipeline()
+        # Remove old entries
+        pipe.zremrangebyscore(key, 0, window_start)
+        # Count current window
+        pipe.zcard(key)
+        # Add current request
+        pipe.zadd(key, {str(now): now})
+        # Set expiry
+        pipe.expire(key, config['window'])
+        results = pipe.execute()
+
+        count = results[1]
+
+        if count >= config['max']:
+            retry_after = int(config['window'] - (now - window_start))
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "rate_limit_exceeded",
+                    "limit": config['max'],
+                    "window": config['window'],
+                    "retry_after": retry_after
+                },
+                headers={"Retry-After": str(retry_after)}
+            )
+
+    async def check_concurrent_jobs(self, api_key_id: str, max_concurrent: int = 50):
+        """Check if API key has reached concurrent job limit."""
+
+        # Count pending + running jobs for this API key
+        count = db.query_one(
+            """SELECT COUNT(*) as count FROM jobs
+               WHERE api_key_id = %s AND status IN ('pending', 'running')""",
+            [api_key_id]
+        )['count']
+
+        if count >= max_concurrent:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "concurrent_job_limit",
+                    "current": count,
+                    "limit": max_concurrent
+                }
+            )
+```
+
+### Rate Limit Middleware
+
+```python
+# app/middleware/rate_limit.py
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, redis: Redis):
+        super().__init__(app)
+        self.limiter = RateLimiter(redis)
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for health endpoints
+        if request.url.path in ["/health", "/ready", "/metrics"]:
+            return await call_next(request)
+
+        # Get API key from request state (set by auth middleware)
+        api_key = getattr(request.state, 'api_key', None)
+        if not api_key:
+            return await call_next(request)
+
+        # Check API request rate
+        await self.limiter.check_rate_limit(api_key.id, 'api_requests')
+
+        # For job submission endpoint, also check job-specific limits
+        if request.url.path == "/api/v1/jobs" and request.method == "POST":
+            await self.limiter.check_rate_limit(api_key.id, 'job_submissions')
+            await self.limiter.check_concurrent_jobs(api_key.id)
+
+        response = await call_next(request)
+
+        # Add rate limit headers to response
+        await self._add_rate_limit_headers(response, api_key.id)
+
+        return response
+
+    async def _add_rate_limit_headers(self, response, api_key_id: str):
+        """Add standard rate limit headers to response."""
+        key = f"ratelimit:{api_key_id}:api_requests"
+        count = self.limiter.redis.zcard(key)
+
+        response.headers["X-RateLimit-Limit"] = "100"
+        response.headers["X-RateLimit-Remaining"] = str(max(0, 100 - count))
+        response.headers["X-RateLimit-Reset"] = str(int(time.time()) + 60)
+```
+
+### Per-Key Custom Limits
+
+Some API keys may need different limits (e.g., CI/CD pipelines need higher throughput):
+
+```sql
+-- Add to api_keys table
+ALTER TABLE api_keys ADD COLUMN rate_limit_requests INT DEFAULT 100;
+ALTER TABLE api_keys ADD COLUMN rate_limit_jobs INT DEFAULT 20;
+ALTER TABLE api_keys ADD COLUMN max_concurrent_jobs INT DEFAULT 50;
+```
+
+```python
+# Updated rate limiter to use per-key limits
+async def check_rate_limit(self, api_key: APIKey, limit_type: str):
+    limits = {
+        'api_requests': {
+            'max': api_key.rate_limit_requests or 100,
+            'window': 60
+        },
+        'job_submissions': {
+            'max': api_key.rate_limit_jobs or 20,
+            'window': 60
+        },
+    }
+    # ... rest of implementation
+```
+
+### Response Headers
+
+All responses include rate limit information:
+
+```
+HTTP/1.1 200 OK
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 87
+X-RateLimit-Reset: 1705487190
+```
+
+Rate limited response:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 45
+Content-Type: application/json
+
+{
+    "error": "rate_limit_exceeded",
+    "limit": 100,
+    "window": 60,
+    "retry_after": 45
+}
+```
+
+### Metrics for Rate Limiting
+
+```python
+# app/metrics.py
+from prometheus_client import Counter
+
+RATE_LIMIT_HITS = Counter(
+    'ansible_api_rate_limit_hits_total',
+    'Total rate limit hits',
+    ['api_key_name', 'limit_type']  # api_requests, job_submissions, concurrent_jobs
+)
+
+# In rate limiter
+if count >= config['max']:
+    RATE_LIMIT_HITS.labels(
+        api_key_name=api_key.name,
+        limit_type=limit_type
+    ).inc()
+    raise HTTPException(429, ...)
+```
+
+### Design Decisions
+
+| Decision | Approach |
+|----------|----------|
+| Algorithm | Sliding window (Redis sorted sets) - smooth, no burst at window edge |
+| Storage | Redis - fast, ephemeral (lost on restart is acceptable) |
+| Granularity | Per API key (not per IP) |
+| Custom limits | Per-key overrides stored in DB |
+| Headers | Standard X-RateLimit-* headers for client visibility |
+| Concurrent jobs | DB query (accurate count of active jobs) |
+
+---
+
 ## Sections To Be Completed
 
 The following sections need to be designed:
@@ -3625,7 +3872,7 @@ The following sections need to be designed:
 - [x] Deployment Architecture (K8s + Docker Compose)
 - [x] Observability (metrics, tracing, logging)
 - [x] Security Considerations
-- [ ] API Rate Limiting
+- [x] API Rate Limiting
 
 Completed:
 - [x] High-Level Architecture
@@ -3667,3 +3914,4 @@ Completed:
 | 2026-01-17 | - | Added Deployment Architecture (K8s + Docker Compose for local dev) |
 | 2026-01-18 | - | Added Observability (combined v1 implementation details with v2 production structure) |
 | 2026-01-18 | - | Added Security Considerations (network, auth, RBAC, input validation, audit logging) |
+| 2026-01-18 | - | Added API Rate Limiting (sliding window, per-key limits, middleware) |
