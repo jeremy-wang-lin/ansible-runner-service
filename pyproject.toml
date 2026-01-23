@@ -7,6 +7,8 @@ dependencies = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
     "ansible-runner>=2.3.0",
+    "rq>=1.16.0",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -26,3 +28,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration tests (require Redis)",
+]

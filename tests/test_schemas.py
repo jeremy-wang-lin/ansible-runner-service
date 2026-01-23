@@ -2,7 +2,7 @@
 import pytest
 from pydantic import ValidationError
 
-from ansible_runner_service.schemas import JobRequest, JobResponse
+from ansible_runner_service.schemas import JobRequest, JobResponse, JobSubmitResponse, JobDetail, JobResultSchema
 
 
 class TestJobRequest:
@@ -36,3 +36,33 @@ class TestJobResponse:
         )
         assert resp.status == "successful"
         assert resp.rc == 0
+
+
+class TestJobSubmitResponse:
+    def test_create_response(self):
+        resp = JobSubmitResponse(
+            job_id="abc123",
+            status="pending",
+            created_at="2026-01-21T10:00:00Z",
+        )
+        assert resp.job_id == "abc123"
+        assert resp.status == "pending"
+
+
+class TestJobDetail:
+    def test_create_detail(self):
+        detail = JobDetail(
+            job_id="abc123",
+            status="successful",
+            playbook="hello.yml",
+            created_at="2026-01-21T10:00:00Z",
+            started_at="2026-01-21T10:00:01Z",
+            finished_at="2026-01-21T10:00:05Z",
+            result=JobResultSchema(
+                rc=0,
+                stdout="Hello!",
+                stats={"localhost": {"ok": 1}},
+            ),
+        )
+        assert detail.job_id == "abc123"
+        assert detail.result.rc == 0

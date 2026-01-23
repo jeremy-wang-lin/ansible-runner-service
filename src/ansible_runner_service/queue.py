@@ -1,0 +1,29 @@
+# src/ansible_runner_service/queue.py
+from typing import Any
+
+from redis import Redis
+from rq import Queue
+
+
+def get_queue(redis: Redis) -> Queue:
+    return Queue(connection=redis)
+
+
+def enqueue_job(
+    job_id: str,
+    playbook: str,
+    extra_vars: dict[str, Any],
+    inventory: str,
+    redis: Redis | None = None,
+) -> None:
+    """Enqueue a job for async execution."""
+    if redis is None:
+        redis = Redis()
+    queue = Queue(connection=redis)
+    queue.enqueue(
+        "ansible_runner_service.worker.execute_job",
+        job_id=job_id,
+        playbook=playbook,
+        extra_vars=extra_vars,
+        inventory=inventory,
+    )
