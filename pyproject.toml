@@ -9,6 +9,9 @@ dependencies = [
     "ansible-runner>=2.3.0",
     "rq>=1.16.0",
     "redis>=5.0.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "pymysql>=1.1.0",
 ]
 
 [project.optional-dependencies]
