@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-from ansible_runner_service.main import app, get_playbooks_dir, get_job_store, get_redis
+from ansible_runner_service.main import app, get_playbooks_dir, get_job_store, get_redis, get_repository
 from ansible_runner_service.job_store import Job, JobStatus, JobResult
 
 
@@ -166,5 +166,141 @@ class TestGetJob:
                 response = await client.get("/api/v1/jobs/nonexistent")
 
             assert response.status_code == 404
+        finally:
+            app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def mock_job_store():
+    mock = MagicMock()
+    return mock
+
+
+@pytest.fixture
+def mock_redis():
+    mock = MagicMock()
+    return mock
+
+
+class TestListJobs:
+    async def test_list_jobs_empty(self, playbooks_dir: Path, mock_job_store, mock_redis):
+        mock_repo = MagicMock()
+        mock_repo.list_jobs.return_value = ([], 0)
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["jobs"] == []
+            assert data["total"] == 0
+            assert data["limit"] == 20
+            assert data["offset"] == 0
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_list_jobs_with_results(self, playbooks_dir: Path, mock_job_store, mock_redis):
+        from ansible_runner_service.models import JobModel
+
+        mock_job = JobModel(
+            id="test-123",
+            status="successful",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 24, 10, 0, 0, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 1, 24, 10, 0, 5, tzinfo=timezone.utc),
+        )
+        mock_repo = MagicMock()
+        mock_repo.list_jobs.return_value = ([mock_job], 1)
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["jobs"]) == 1
+            assert data["jobs"][0]["job_id"] == "test-123"
+            assert data["jobs"][0]["status"] == "successful"
+            assert data["total"] == 1
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_list_jobs_with_status_filter(self, playbooks_dir: Path, mock_job_store, mock_redis):
+        mock_repo = MagicMock()
+        mock_repo.list_jobs.return_value = ([], 0)
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs?status=failed")
+
+            assert response.status_code == 200
+            mock_repo.list_jobs.assert_called_once_with(
+                status="failed",
+                limit=20,
+                offset=0,
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_list_jobs_with_pagination(self, playbooks_dir: Path, mock_job_store, mock_redis):
+        mock_repo = MagicMock()
+        mock_repo.list_jobs.return_value = ([], 0)
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs?limit=10&offset=20")
+
+            assert response.status_code == 200
+            mock_repo.list_jobs.assert_called_once_with(
+                status=None,
+                limit=10,
+                offset=20,
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_list_jobs_limit_capped_at_100(self, playbooks_dir: Path, mock_job_store, mock_redis):
+        mock_repo = MagicMock()
+        mock_repo.list_jobs.return_value = ([], 0)
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs?limit=200")
+
+            assert response.status_code == 200
+            # Should cap at 100
+            mock_repo.list_jobs.assert_called_once_with(
+                status=None,
+                limit=100,
+                offset=0,
+            )
         finally:
             app.dependency_overrides.clear()

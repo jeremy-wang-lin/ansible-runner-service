@@ -15,7 +15,11 @@ from ansible_runner_service.schemas import (
     JobSubmitResponse,
     JobDetail,
     JobResultSchema,
+    JobSummary,
+    JobListResponse,
 )
+from ansible_runner_service.repository import JobRepository
+from ansible_runner_service.database import get_engine, get_session
 
 app = FastAPI(title="Ansible Runner Service")
 
@@ -32,6 +36,12 @@ def get_redis() -> Redis:
 
 def get_job_store() -> JobStore:
     return JobStore(get_redis())
+
+
+def get_repository() -> JobRepository:
+    engine = get_engine()
+    Session = get_session(engine)
+    return JobRepository(Session())
 
 
 @app.post(
@@ -98,6 +108,42 @@ def submit_job(
             status=job.status.value,
             created_at=job.created_at.isoformat(),
         ).model_dump(),
+    )
+
+
+@app.get("/api/v1/jobs", response_model=JobListResponse)
+def list_jobs(
+    status: str | None = Query(default=None, description="Filter by status"),
+    limit: int = Query(default=20, ge=1, description="Max results"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    repository: JobRepository = Depends(get_repository),
+) -> JobListResponse:
+    """List jobs with optional filtering and pagination."""
+    # Cap limit at 100
+    limit = min(limit, 100)
+
+    jobs, total = repository.list_jobs(
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+
+    job_summaries = [
+        JobSummary(
+            job_id=job.id,
+            status=job.status,
+            playbook=job.playbook,
+            created_at=job.created_at.isoformat(),
+            finished_at=job.finished_at.isoformat() if job.finished_at else None,
+        )
+        for job in jobs
+    ]
+
+    return JobListResponse(
+        jobs=job_summaries,
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 
