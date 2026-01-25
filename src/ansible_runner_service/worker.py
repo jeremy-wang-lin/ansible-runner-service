@@ -11,12 +11,23 @@ from ansible_runner_service.repository import JobRepository
 from ansible_runner_service.database import get_engine, get_session
 
 
+# Engine singleton for connection reuse
+_engine = None
+
+
+def get_engine_singleton():
+    global _engine
+    if _engine is None:
+        _engine = get_engine()
+    return _engine
+
+
 def get_redis() -> Redis:
     return Redis()
 
 
 def get_repository() -> JobRepository:
-    engine = get_engine()
+    engine = get_engine_singleton()
     Session = get_session(engine)
     return JobRepository(Session())
 
