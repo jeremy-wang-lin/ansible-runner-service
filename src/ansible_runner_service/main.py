@@ -166,28 +166,53 @@ def list_jobs(
 def get_job(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
+    repository: JobRepository = Depends(get_repository),
 ) -> JobDetail:
     """Get job status and details."""
+    # Try Redis first (fast for active jobs)
     job = job_store.get_job(job_id)
 
-    if job is None:
+    if job is not None:
+        result = None
+        if job.result:
+            result = JobResultSchema(
+                rc=job.result.rc,
+                stdout=job.result.stdout,
+                stats=job.result.stats,
+            )
+
+        return JobDetail(
+            job_id=job.job_id,
+            status=job.status.value,
+            playbook=job.playbook,
+            created_at=job.created_at.isoformat(),
+            started_at=job.started_at.isoformat() if job.started_at else None,
+            finished_at=job.finished_at.isoformat() if job.finished_at else None,
+            result=result,
+            error=job.error,
+        )
+
+    # Fallback to DB (for completed jobs after TTL)
+    db_job = repository.get(job_id)
+
+    if db_job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
     result = None
-    if job.result:
+    if db_job.result_rc is not None:
         result = JobResultSchema(
-            rc=job.result.rc,
-            stdout=job.result.stdout,
-            stats=job.result.stats,
+            rc=db_job.result_rc,
+            stdout=db_job.result_stdout or "",
+            stats=db_job.result_stats or {},
         )
 
     return JobDetail(
-        job_id=job.job_id,
-        status=job.status.value,
-        playbook=job.playbook,
-        created_at=job.created_at.isoformat(),
-        started_at=job.started_at.isoformat() if job.started_at else None,
-        finished_at=job.finished_at.isoformat() if job.finished_at else None,
+        job_id=db_job.id,
+        status=db_job.status,
+        playbook=db_job.playbook,
+        created_at=db_job.created_at.isoformat(),
+        started_at=db_job.started_at.isoformat() if db_job.started_at else None,
+        finished_at=db_job.finished_at.isoformat() if db_job.finished_at else None,
         result=result,
-        error=job.error,
+        error=db_job.error,
     )

@@ -304,3 +304,95 @@ class TestListJobs:
             )
         finally:
             app.dependency_overrides.clear()
+
+
+class TestGetJobWithDBFallback:
+    async def test_get_job_from_redis(self, playbooks_dir: Path):
+        """Job found in Redis, no DB lookup needed."""
+        from ansible_runner_service.job_store import Job, JobStatus
+
+        mock_job = Job(
+            job_id="test-123",
+            status=JobStatus.SUCCESSFUL,
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        mock_store = MagicMock()
+        mock_store.get_job.return_value = mock_job
+        mock_repo = MagicMock()
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs/test-123")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        # Repository should NOT be called when Redis has the job
+        mock_repo.get.assert_not_called()
+
+    async def test_get_job_fallback_to_db(self, playbooks_dir: Path):
+        """Job not in Redis, found in DB."""
+        from ansible_runner_service.models import JobModel
+
+        mock_store = MagicMock()
+        mock_store.get_job.return_value = None  # Not in Redis
+
+        mock_db_job = JobModel(
+            id="test-123",
+            status="successful",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 24, 10, 0, 0, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 1, 24, 10, 0, 5, tzinfo=timezone.utc),
+            result_rc=0,
+            result_stdout="PLAY [Hello]...",
+            result_stats={"localhost": {"ok": 1}},
+        )
+
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = mock_db_job
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs/test-123")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == "test-123"
+        assert data["status"] == "successful"
+        mock_repo.get.assert_called_once_with("test-123")
+
+    async def test_get_job_not_in_redis_or_db(self, playbooks_dir: Path):
+        """Job not found anywhere."""
+        mock_store = MagicMock()
+        mock_store.get_job.return_value = None
+
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = None
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/api/v1/jobs/test-123")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
