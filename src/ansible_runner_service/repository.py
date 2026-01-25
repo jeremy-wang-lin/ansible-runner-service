@@ -47,11 +47,11 @@ class JobRepository:
         result_stdout: str | None = None,
         result_stats: dict[str, Any] | None = None,
         error: str | None = None,
-    ) -> None:
-        """Update job status and related fields."""
+    ) -> bool:
+        """Update job status and related fields. Returns True if job was found and updated."""
         job = self.get(job_id)
         if job is None:
-            return
+            return False
 
         job.status = status
         if started_at is not None:
@@ -68,6 +68,7 @@ class JobRepository:
             job.error = error
 
         self.session.commit()
+        return True
 
     def list_jobs(
         self,
