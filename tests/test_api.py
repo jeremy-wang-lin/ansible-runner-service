@@ -396,3 +396,40 @@ class TestGetJobWithDBFallback:
             app.dependency_overrides.clear()
 
         assert response.status_code == 404
+
+
+class TestSubmitJobWithDB:
+    async def test_submit_async_writes_to_db(self, playbooks_dir: Path):
+        from unittest.mock import MagicMock, patch
+        from ansible_runner_service.job_store import Job, JobStatus
+        from datetime import datetime, timezone
+
+        mock_job = Job(
+            job_id="test-123",
+            status=JobStatus.PENDING,
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        mock_store = MagicMock()
+        mock_store.create_job.return_value = mock_job
+        mock_repo = MagicMock()
+
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_repository] = lambda: mock_repo
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.enqueue_job"):
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={"playbook": "hello.yml"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 202
+        mock_store.create_job.assert_called_once()

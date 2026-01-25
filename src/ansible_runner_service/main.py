@@ -45,7 +45,10 @@ def get_redis() -> Redis:
 
 
 def get_job_store() -> JobStore:
-    return JobStore(get_redis())
+    engine = get_engine_singleton()
+    Session = get_session(engine)
+    repository = JobRepository(Session())
+    return JobStore(get_redis(), repository=repository)
 
 
 def get_repository():
