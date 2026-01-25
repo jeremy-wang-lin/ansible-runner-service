@@ -42,3 +42,20 @@ class JobDetail(BaseModel):
     finished_at: str | None = None
     result: JobResultSchema | None = None
     error: str | None = None
+
+
+class JobSummary(BaseModel):
+    """Job summary for list endpoint."""
+    job_id: str
+    status: str
+    playbook: str
+    created_at: str
+    finished_at: str | None = None
+
+
+class JobListResponse(BaseModel):
+    """Response for GET /jobs list endpoint."""
+    jobs: list[JobSummary]
+    total: int
+    limit: int
+    offset: int
