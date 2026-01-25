@@ -1,5 +1,5 @@
 # src/ansible_runner_service/repository.py
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import desc
@@ -95,3 +95,16 @@ class JobRepository:
         )
 
         return jobs, total
+
+    def list_stale_running_jobs(
+        self,
+        stale_threshold: timedelta = timedelta(hours=1),
+    ) -> list[JobModel]:
+        """Find jobs that have been 'running' longer than threshold."""
+        cutoff = datetime.now(timezone.utc) - stale_threshold
+        return (
+            self.session.query(JobModel)
+            .filter(JobModel.status == "running")
+            .filter(JobModel.started_at < cutoff)
+            .all()
+        )

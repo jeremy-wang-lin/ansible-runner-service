@@ -1,4 +1,5 @@
 # src/ansible_runner_service/main.py
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Union
 
@@ -21,8 +22,6 @@ from ansible_runner_service.schemas import (
 from ansible_runner_service.repository import JobRepository
 from ansible_runner_service.database import get_engine, get_session
 
-app = FastAPI(title="Ansible Runner Service")
-
 # Engine singleton for connection reuse
 _engine = None
 
@@ -33,15 +32,55 @@ def get_engine_singleton():
         _engine = get_engine()
     return _engine
 
+
+def get_redis() -> Redis:
+    return Redis()
+
+
+def recover_stale_jobs(repository: JobRepository, redis: Redis) -> None:
+    """Mark stale running jobs as failed on startup."""
+    stale_jobs = repository.list_stale_running_jobs()
+
+    for job in stale_jobs:
+        # Only mark as failed if not in Redis (truly abandoned)
+        if not redis.exists(f"job:{job.id}"):
+            repository.update_status(
+                job.id,
+                "failed",
+                error="Worker crashed or timed out",
+            )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events."""
+    # Startup: recover stale jobs
+    try:
+        engine = get_engine_singleton()
+        Session = get_session(engine)
+        session = Session()
+        try:
+            repository = JobRepository(session)
+            redis = get_redis()
+            recover_stale_jobs(repository, redis)
+        finally:
+            session.close()
+    except Exception:
+        pass  # Don't block startup if DB not ready
+
+    yield
+
+    # Shutdown: nothing to do
+
+
+app = FastAPI(title="Ansible Runner Service", lifespan=lifespan)
+
+
 PLAYBOOKS_DIR = Path(__file__).parent.parent.parent / "playbooks"
 
 
 def get_playbooks_dir() -> Path:
     return PLAYBOOKS_DIR
-
-
-def get_redis() -> Redis:
-    return Redis()
 
 
 def get_job_store():
