@@ -23,6 +23,16 @@ from ansible_runner_service.database import get_engine, get_session
 
 app = FastAPI(title="Ansible Runner Service")
 
+# Engine singleton for connection reuse
+_engine = None
+
+
+def get_engine_singleton():
+    global _engine
+    if _engine is None:
+        _engine = get_engine()
+    return _engine
+
 PLAYBOOKS_DIR = Path(__file__).parent.parent.parent / "playbooks"
 
 
@@ -38,10 +48,15 @@ def get_job_store() -> JobStore:
     return JobStore(get_redis())
 
 
-def get_repository() -> JobRepository:
-    engine = get_engine()
+def get_repository():
+    """Dependency that provides a JobRepository with proper session lifecycle."""
+    engine = get_engine_singleton()
     Session = get_session(engine)
-    return JobRepository(Session())
+    session = Session()
+    try:
+        yield JobRepository(session)
+    finally:
+        session.close()
 
 
 @app.post(
