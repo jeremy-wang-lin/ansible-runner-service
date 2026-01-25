@@ -44,11 +44,16 @@ def get_redis() -> Redis:
     return Redis()
 
 
-def get_job_store() -> JobStore:
+def get_job_store():
+    """Dependency that provides a JobStore with proper session lifecycle."""
     engine = get_engine_singleton()
     Session = get_session(engine)
-    repository = JobRepository(Session())
-    return JobStore(get_redis(), repository=repository)
+    session = Session()
+    try:
+        repository = JobRepository(session)
+        yield JobStore(get_redis(), repository=repository)
+    finally:
+        session.close()
 
 
 def get_repository():
