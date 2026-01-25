@@ -8,6 +8,11 @@ from ansible_runner_service.job_store import JobStatus, JobResult
 from ansible_runner_service.runner import RunResult
 
 
+@pytest.fixture
+def mock_redis():
+    return MagicMock()
+
+
 class TestExecuteJob:
     @patch("ansible_runner_service.worker.get_job_store")
     @patch("ansible_runner_service.worker.run_playbook")
@@ -62,3 +67,40 @@ class TestExecuteJob:
         calls = mock_store.update_status.call_args_list
         assert calls[1].args[1] == JobStatus.FAILED
         assert "Playbook error" in calls[1].kwargs["error"]
+
+
+class TestExecuteJobWithDB:
+    def test_writes_to_db_on_status_changes(self, mock_redis):
+        from unittest.mock import MagicMock, patch
+        from ansible_runner_service.worker import execute_job
+        from ansible_runner_service.job_store import JobStore
+
+        mock_result = MagicMock()
+        mock_result.rc = 0
+        mock_result.stdout = "PLAY [Hello]..."
+        mock_result.stats = {"localhost": {"ok": 1}}
+
+        mock_repo = MagicMock()
+
+        with patch("ansible_runner_service.worker.run_playbook", return_value=mock_result):
+            with patch("ansible_runner_service.worker.get_repository", return_value=mock_repo):
+                with patch("ansible_runner_service.worker.get_redis", return_value=mock_redis):
+                    execute_job(
+                        job_id="test-123",
+                        playbook="hello.yml",
+                        extra_vars={},
+                        inventory="localhost,",
+                    )
+
+        # Verify repository.update_status was called twice (running, then successful)
+        assert mock_repo.update_status.call_count == 2
+
+        # Verify first call was for RUNNING status
+        first_call = mock_repo.update_status.call_args_list[0]
+        assert first_call.args[0] == "test-123"
+        assert first_call.args[1] == "running"
+
+        # Verify second call was for SUCCESSFUL status
+        second_call = mock_repo.update_status.call_args_list[1]
+        assert second_call.args[0] == "test-123"
+        assert second_call.args[1] == "successful"

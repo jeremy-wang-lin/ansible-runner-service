@@ -7,14 +7,22 @@ from redis import Redis
 
 from ansible_runner_service.job_store import JobStore, JobStatus, JobResult
 from ansible_runner_service.runner import run_playbook
+from ansible_runner_service.repository import JobRepository
+from ansible_runner_service.database import get_engine, get_session
 
 
 def get_redis() -> Redis:
     return Redis()
 
 
+def get_repository() -> JobRepository:
+    engine = get_engine()
+    Session = get_session(engine)
+    return JobRepository(Session())
+
+
 def get_job_store() -> JobStore:
-    return JobStore(get_redis())
+    return JobStore(get_redis(), repository=get_repository())
 
 
 def get_playbooks_dir() -> Path:
