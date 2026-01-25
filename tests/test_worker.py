@@ -13,15 +13,33 @@ def mock_redis():
     return MagicMock()
 
 
+@pytest.fixture
+def mock_session():
+    """Mock database session."""
+    session = MagicMock()
+    return session
+
+
 class TestExecuteJob:
-    @patch("ansible_runner_service.worker.get_job_store")
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
     @patch("ansible_runner_service.worker.run_playbook")
     @patch("ansible_runner_service.worker.get_playbooks_dir")
     def test_successful_execution(
-        self, mock_get_playbooks_dir, mock_run_playbook, mock_get_job_store
+        self,
+        mock_get_playbooks_dir,
+        mock_run_playbook,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
     ):
         mock_store = MagicMock()
-        mock_get_job_store.return_value = mock_store
+        mock_job_store_class.return_value = mock_store
         mock_get_playbooks_dir.return_value = "/playbooks"
         mock_run_playbook.return_value = RunResult(
             status="successful",
@@ -45,14 +63,25 @@ class TestExecuteJob:
         assert calls[1].args[1] == JobStatus.SUCCESSFUL
         assert calls[1].kwargs["result"].rc == 0
 
-    @patch("ansible_runner_service.worker.get_job_store")
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
     @patch("ansible_runner_service.worker.run_playbook")
     @patch("ansible_runner_service.worker.get_playbooks_dir")
     def test_failed_execution(
-        self, mock_get_playbooks_dir, mock_run_playbook, mock_get_job_store
+        self,
+        mock_get_playbooks_dir,
+        mock_run_playbook,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
     ):
         mock_store = MagicMock()
-        mock_get_job_store.return_value = mock_store
+        mock_job_store_class.return_value = mock_store
         mock_get_playbooks_dir.return_value = "/playbooks"
         mock_run_playbook.side_effect = Exception("Playbook error")
 
@@ -73,7 +102,6 @@ class TestExecuteJobWithDB:
     def test_writes_to_db_on_status_changes(self, mock_redis):
         from unittest.mock import MagicMock, patch
         from ansible_runner_service.worker import execute_job
-        from ansible_runner_service.job_store import JobStore
 
         mock_result = MagicMock()
         mock_result.rc = 0
@@ -81,16 +109,20 @@ class TestExecuteJobWithDB:
         mock_result.stats = {"localhost": {"ok": 1}}
 
         mock_repo = MagicMock()
+        mock_session = MagicMock()
+        mock_session_factory = MagicMock(return_value=mock_session)
 
         with patch("ansible_runner_service.worker.run_playbook", return_value=mock_result):
-            with patch("ansible_runner_service.worker.get_repository", return_value=mock_repo):
-                with patch("ansible_runner_service.worker.get_redis", return_value=mock_redis):
-                    execute_job(
-                        job_id="test-123",
-                        playbook="hello.yml",
-                        extra_vars={},
-                        inventory="localhost,",
-                    )
+            with patch("ansible_runner_service.worker.get_engine_singleton"):
+                with patch("ansible_runner_service.worker.get_session", return_value=mock_session_factory):
+                    with patch("ansible_runner_service.worker.JobRepository", return_value=mock_repo) as mock_repo_class:
+                        with patch("ansible_runner_service.worker.get_redis", return_value=mock_redis):
+                            execute_job(
+                                job_id="test-123",
+                                playbook="hello.yml",
+                                extra_vars={},
+                                inventory="localhost,",
+                            )
 
         # Verify repository.update_status was called twice (running, then successful)
         assert mock_repo.update_status.call_count == 2
@@ -104,3 +136,6 @@ class TestExecuteJobWithDB:
         second_call = mock_repo.update_status.call_args_list[1]
         assert second_call.args[0] == "test-123"
         assert second_call.args[1] == "successful"
+
+        # Verify session was closed
+        mock_session.close.assert_called_once()
