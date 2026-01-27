@@ -19,4 +19,9 @@ class TestEnqueueJob:
 
         mock_queue.enqueue.assert_called_once()
         call_args = mock_queue.enqueue.call_args
-        assert call_args.kwargs["job_id"] == "test-123"
+        # Arguments are passed via explicit kwargs dict to avoid rq reserved keyword collision
+        job_kwargs = call_args.kwargs["kwargs"]
+        assert job_kwargs["job_id"] == "test-123"
+        assert job_kwargs["playbook"] == "hello.yml"
+        assert job_kwargs["extra_vars"] == {"name": "World"}
+        assert job_kwargs["inventory"] == "localhost,"
