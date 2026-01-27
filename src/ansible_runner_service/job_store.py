@@ -70,15 +70,20 @@ class JobStore:
         )
         self._save_job(job)
 
-        # Write-through to DB
+        # Write-through to DB with strict consistency
         if self.repository:
-            self.repository.create(
-                job_id=job.job_id,
-                playbook=playbook,
-                extra_vars=extra_vars,
-                inventory=inventory,
-                created_at=job.created_at,
-            )
+            try:
+                self.repository.create(
+                    job_id=job.job_id,
+                    playbook=playbook,
+                    extra_vars=extra_vars,
+                    inventory=inventory,
+                    created_at=job.created_at,
+                )
+            except Exception:
+                # Rollback Redis on DB failure for strict consistency
+                self.redis.delete(self._job_key(job.job_id))
+                raise
 
         return job
 
@@ -97,18 +102,7 @@ class JobStore:
         result: JobResult | None = None,
         error: str | None = None,
     ) -> None:
-        updates = {"status": status.value}
-        if started_at:
-            updates["started_at"] = started_at.isoformat()
-        if finished_at:
-            updates["finished_at"] = finished_at.isoformat()
-        if result:
-            updates["result"] = json.dumps(asdict(result))
-        if error:
-            updates["error"] = error
-        self.redis.hset(self._job_key(job_id), mapping=updates)
-
-        # Write-through to DB
+        # Write to DB first for strict consistency (if DB fails, Redis unchanged)
         if self.repository:
             self.repository.update_status(
                 job_id,
@@ -120,6 +114,18 @@ class JobStore:
                 result_stats=result.stats if result else None,
                 error=error,
             )
+
+        # Then update Redis
+        updates = {"status": status.value}
+        if started_at:
+            updates["started_at"] = started_at.isoformat()
+        if finished_at:
+            updates["finished_at"] = finished_at.isoformat()
+        if result:
+            updates["result"] = json.dumps(asdict(result))
+        if error:
+            updates["error"] = error
+        self.redis.hset(self._job_key(job_id), mapping=updates)
 
     def _save_job(self, job: Job) -> None:
         data = {

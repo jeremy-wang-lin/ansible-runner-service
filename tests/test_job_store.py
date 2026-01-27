@@ -128,3 +128,39 @@ class TestJobStoreWithDB:
         )
 
         assert job.playbook == "hello.yml"
+
+    def test_create_job_rollbacks_redis_on_db_failure(self):
+        """Strict consistency: Redis key deleted if DB write fails."""
+        from ansible_runner_service.job_store import JobStore
+
+        mock_redis = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.create.side_effect = Exception("DB connection failed")
+
+        store = JobStore(mock_redis, repository=mock_repo)
+
+        with pytest.raises(Exception, match="DB connection failed"):
+            store.create_job(
+                playbook="hello.yml",
+                extra_vars={},
+                inventory="localhost,",
+            )
+
+        # Verify Redis key was deleted for rollback
+        mock_redis.delete.assert_called_once()
+
+    def test_update_status_no_redis_update_on_db_failure(self):
+        """Strict consistency: Redis not updated if DB write fails."""
+        from ansible_runner_service.job_store import JobStore, JobStatus
+
+        mock_redis = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.update_status.side_effect = Exception("DB connection failed")
+
+        store = JobStore(mock_redis, repository=mock_repo)
+
+        with pytest.raises(Exception, match="DB connection failed"):
+            store.update_status("test-123", JobStatus.RUNNING)
+
+        # Verify Redis hset was NOT called (DB failed first)
+        mock_redis.hset.assert_not_called()
