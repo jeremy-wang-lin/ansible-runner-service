@@ -13,7 +13,7 @@ from pathlib import Path
 from redis import Redis
 from httpx import AsyncClient, ASGITransport
 
-from ansible_runner_service.main import app, get_playbooks_dir, get_redis, get_job_store
+from ansible_runner_service.main import app, get_playbooks_dir, get_redis, get_job_store, get_repository
 from ansible_runner_service.job_store import JobStore
 
 
@@ -97,6 +97,115 @@ class TestAsyncFlow:
         data = response.json()
         assert data["status"] == "successful"
         assert "Hello, World!" in data["stdout"]
+
+
+class TestRedisTTLFallback:
+    """Test that job data survives Redis TTL expiration by falling back to DB."""
+
+    @pytest.fixture
+    def db_session(self):
+        """Create a test database session."""
+        from ansible_runner_service.database import get_engine, get_session
+        from ansible_runner_service.models import Base
+
+        engine = get_engine("mysql+pymysql://root:devpassword@localhost:3306/ansible_runner_test")
+        Session = get_session(engine)
+        session = Session()
+
+        Base.metadata.create_all(engine)
+
+        yield session
+
+        session.rollback()
+        Base.metadata.drop_all(engine)
+        session.close()
+
+    @pytest.fixture
+    def repository(self, db_session):
+        from ansible_runner_service.repository import JobRepository
+        return JobRepository(db_session)
+
+    @pytest.fixture
+    def job_store_with_db(self, redis, repository):
+        return JobStore(redis, repository=repository)
+
+    @pytest.fixture
+    def client_with_db(self, playbooks_dir: Path, redis: Redis, job_store_with_db: JobStore, repository):
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_redis] = lambda: redis
+        app.dependency_overrides[get_job_store] = lambda: job_store_with_db
+        from ansible_runner_service.main import get_repository
+        app.dependency_overrides[get_repository] = lambda: repository
+        yield AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+        app.dependency_overrides.clear()
+
+    async def test_job_survives_redis_ttl_expiration(
+        self, client_with_db: AsyncClient, redis: Redis, job_store_with_db: JobStore, playbooks_dir: Path
+    ):
+        """Verify job data is retrievable from DB after Redis key expires/deleted."""
+        from datetime import datetime, timezone
+        from ansible_runner_service.job_store import JobStatus, JobResult
+        from ansible_runner_service.runner import run_playbook
+
+        # Submit a job (creates in both Redis and DB)
+        response = await client_with_db.post(
+            "/api/v1/jobs",
+            json={"playbook": "hello.yml"},
+        )
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+
+        # Simulate worker execution using the test's job_store (writes to test DB)
+        job_store_with_db.update_status(
+            job_id,
+            JobStatus.RUNNING,
+            started_at=datetime.now(timezone.utc),
+        )
+
+        # Actually run the playbook
+        run_result = run_playbook(
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            playbooks_dir=playbooks_dir,
+        )
+
+        # Update status to successful (writes to both Redis and test DB)
+        job_store_with_db.update_status(
+            job_id,
+            JobStatus.SUCCESSFUL,
+            finished_at=datetime.now(timezone.utc),
+            result=JobResult(
+                rc=run_result.rc,
+                stdout=run_result.stdout,
+                stats=run_result.stats,
+            ),
+        )
+
+        # Verify job exists in Redis
+        assert redis.exists(f"job:{job_id}") == 1
+
+        # Verify job is retrievable via API (from Redis)
+        response = await client_with_db.get(f"/api/v1/jobs/{job_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "successful"
+
+        # Simulate TTL expiration by deleting Redis key
+        redis.delete(f"job:{job_id}")
+
+        # Verify Redis key is gone
+        assert redis.exists(f"job:{job_id}") == 0
+
+        # Verify job is STILL retrievable via API (now from DB fallback)
+        response = await client_with_db.get(f"/api/v1/jobs/{job_id}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert data["status"] == "successful"
+        assert data["playbook"] == "hello.yml"
+        assert data["result"] is not None
+        assert "Hello, World!" in data["result"]["stdout"]
 
 
 @pytest.mark.e2e
