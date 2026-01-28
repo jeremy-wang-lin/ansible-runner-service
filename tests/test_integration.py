@@ -1,9 +1,12 @@
 # tests/test_integration.py
-"""Integration tests requiring Redis.
+"""End-to-end integration tests.
 
 Run with: pytest tests/test_integration.py -v -m integration
 Requires: docker-compose up -d
+
+For TestE2EWithWorker tests, also run: rq worker
 """
+import asyncio
 import pytest
 from pathlib import Path
 
@@ -94,3 +97,64 @@ class TestAsyncFlow:
         data = response.json()
         assert data["status"] == "successful"
         assert "Hello, World!" in data["stdout"]
+
+
+@pytest.mark.e2e
+class TestE2EWithWorker:
+    """End-to-end tests requiring a running rq worker.
+
+    Prerequisites:
+        1. docker-compose up -d (Redis + MariaDB)
+        2. rq worker (in separate terminal)
+
+    Run with: pytest tests/test_integration.py::TestE2EWithWorker -v -m "integration and e2e"
+    """
+
+    @pytest.fixture
+    def e2e_client(self, playbooks_dir: Path, redis: Redis):
+        """Client for E2E tests - no dependency overrides for job_store."""
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_redis] = lambda: redis
+        # Don't override get_job_store - let it use real implementation
+        yield AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+        app.dependency_overrides.clear()
+
+    async def test_submit_job_with_extra_vars_e2e(self, e2e_client: AsyncClient, redis: Redis):
+        """E2E: Submit job with extra_vars, worker processes it, verify result.
+
+        This test verifies the full flow through rq, catching bugs like
+        the job_id kwarg collision where arguments weren't passed correctly
+        to the worker.
+
+        Requires: rq worker running
+        """
+        # Submit job with custom extra_vars
+        response = await e2e_client.post(
+            "/api/v1/jobs",
+            json={
+                "playbook": "hello.yml",
+                "extra_vars": {"name": "E2E-Test"},
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+
+        # Poll until job completes (with timeout)
+        max_attempts = 30
+        for attempt in range(max_attempts):
+            response = await e2e_client.get(f"/api/v1/jobs/{job_id}")
+            assert response.status_code == 200
+            data = response.json()
+
+            if data["status"] in ("successful", "failed"):
+                break
+
+            await asyncio.sleep(0.5)
+        else:
+            pytest.fail(f"Job {job_id} did not complete within timeout. Is rq worker running?")
+
+        # Verify job succeeded and extra_vars were passed correctly
+        assert data["status"] == "successful", f"Job failed: {data.get('error')}"
+        assert "Hello, E2E-Test!" in data["result"]["stdout"], (
+            "extra_vars not passed correctly through rq to worker"
+        )

@@ -33,4 +33,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (require Redis)",
+    "e2e: marks tests as end-to-end tests (require rq worker running)",
 ]
