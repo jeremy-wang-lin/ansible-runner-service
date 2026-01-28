@@ -265,10 +265,13 @@ When adding each feature, create Alembic migrations:
 
 ### result_stats: JSON vs Separate Columns
 
-**Current (JSON blob):**
+**Current (JSON blob - ansible-runner native format):**
 ```sql
-result_stats JSON  -- {"localhost": {"ok": 1, "changed": 0, "failures": 0}}
+result_stats JSON  -- {"ok": {"localhost": 1}, "changed": {}, "failures": {}, ...}
 ```
+
+Note: ansible-runner returns stats organized by stat type, then hosts. This format is more
+convenient for aggregation (e.g., summing failures across all hosts).
 
 **Original design (separate columns):**
 ```sql
@@ -301,10 +304,17 @@ ALTER TABLE jobs ADD COLUMN hosts_failed INT DEFAULT 0;
 ALTER TABLE jobs ADD COLUMN hosts_unreachable INT DEFAULT 0;
 ALTER TABLE jobs ADD COLUMN hosts_skipped INT DEFAULT 0;
 
--- Populate from JSON (if needed)
+-- Populate from JSON (aggregating across all hosts)
+-- ansible-runner format: {"ok": {"host1": 1, "host2": 1}, "failures": {"host3": 1}}
 UPDATE jobs SET
-  hosts_ok = JSON_EXTRACT(result_stats, '$.ok'),
-  hosts_failed = JSON_EXTRACT(result_stats, '$.failures')
+  hosts_ok = (
+    SELECT COALESCE(SUM(value), 0)
+    FROM JSON_TABLE(result_stats, '$.ok.*' COLUMNS(value INT PATH '$')) AS t
+  ),
+  hosts_failed = (
+    SELECT COALESCE(SUM(value), 0)
+    FROM JSON_TABLE(result_stats, '$.failures.*' COLUMNS(value INT PATH '$')) AS t
+  )
 WHERE result_stats IS NOT NULL;
 
 -- Keep result_stats for per-host detail, or drop if using job_host_results table
