@@ -9,6 +9,9 @@ dependencies = [
     "ansible-runner>=2.3.0",
     "rq>=1.16.0",
     "redis>=5.0.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "pymysql>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -30,4 +33,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (require Redis)",
+    "e2e: marks tests as end-to-end tests (require rq worker running)",
 ]

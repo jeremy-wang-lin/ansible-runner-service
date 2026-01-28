@@ -63,3 +63,104 @@ class TestJobStore:
         job_store.update_status("test-123", JobStatus.RUNNING)
 
         mock_redis.hset.assert_called()
+
+
+class TestJobStoreWithDB:
+    def test_create_job_writes_to_db(self):
+        from ansible_runner_service.job_store import JobStore
+
+        mock_redis = MagicMock()
+        mock_repo = MagicMock()
+
+        store = JobStore(mock_redis, repository=mock_repo)
+        job = store.create_job(
+            playbook="hello.yml",
+            extra_vars={"name": "World"},
+            inventory="localhost,",
+        )
+
+        # Verify DB write
+        mock_repo.create.assert_called_once()
+        call_kwargs = mock_repo.create.call_args[1]
+        assert call_kwargs["playbook"] == "hello.yml"
+        assert call_kwargs["extra_vars"] == {"name": "World"}
+        assert call_kwargs["inventory"] == "localhost,"
+
+    def test_update_status_writes_to_db(self):
+        from ansible_runner_service.job_store import JobStore, JobStatus
+        from datetime import datetime, timezone
+
+        mock_redis = MagicMock()
+        mock_repo = MagicMock()
+
+        store = JobStore(mock_redis, repository=mock_repo)
+        now = datetime.now(timezone.utc)
+
+        store.update_status(
+            "test-123",
+            JobStatus.RUNNING,
+            started_at=now,
+        )
+
+        # Verify DB update
+        mock_repo.update_status.assert_called_once_with(
+            "test-123",
+            "running",
+            started_at=now,
+            finished_at=None,
+            result_rc=None,
+            result_stdout=None,
+            result_stats=None,
+            error=None,
+        )
+
+    def test_create_job_works_without_repo(self):
+        """Backwards compatibility: works without repository."""
+        from ansible_runner_service.job_store import JobStore
+
+        mock_redis = MagicMock()
+        store = JobStore(mock_redis)  # No repository
+
+        job = store.create_job(
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+        )
+
+        assert job.playbook == "hello.yml"
+
+    def test_create_job_rollbacks_redis_on_db_failure(self):
+        """Strict consistency: Redis key deleted if DB write fails."""
+        from ansible_runner_service.job_store import JobStore
+
+        mock_redis = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.create.side_effect = Exception("DB connection failed")
+
+        store = JobStore(mock_redis, repository=mock_repo)
+
+        with pytest.raises(Exception, match="DB connection failed"):
+            store.create_job(
+                playbook="hello.yml",
+                extra_vars={},
+                inventory="localhost,",
+            )
+
+        # Verify Redis key was deleted for rollback
+        mock_redis.delete.assert_called_once()
+
+    def test_update_status_no_redis_update_on_db_failure(self):
+        """Strict consistency: Redis not updated if DB write fails."""
+        from ansible_runner_service.job_store import JobStore, JobStatus
+
+        mock_redis = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.update_status.side_effect = Exception("DB connection failed")
+
+        store = JobStore(mock_redis, repository=mock_repo)
+
+        with pytest.raises(Exception, match="DB connection failed"):
+            store.update_status("test-123", JobStatus.RUNNING)
+
+        # Verify Redis hset was NOT called (DB failed first)
+        mock_redis.hset.assert_not_called()

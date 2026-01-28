@@ -4,9 +4,12 @@ import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from redis import Redis
+
+if TYPE_CHECKING:
+    from ansible_runner_service.repository import JobRepository
 
 
 class JobStatus(str, Enum):
@@ -38,9 +41,15 @@ class Job:
 
 
 class JobStore:
-    def __init__(self, redis: Redis, ttl: int = 86400):
+    def __init__(
+        self,
+        redis: Redis,
+        ttl: int = 86400,
+        repository: "JobRepository | None" = None,
+    ):
         self.redis = redis
         self.ttl = ttl  # 24 hours default
+        self.repository = repository
 
     def _job_key(self, job_id: str) -> str:
         return f"job:{job_id}"
@@ -60,6 +69,22 @@ class JobStore:
             created_at=datetime.now(timezone.utc),
         )
         self._save_job(job)
+
+        # Write-through to DB with strict consistency
+        if self.repository:
+            try:
+                self.repository.create(
+                    job_id=job.job_id,
+                    playbook=playbook,
+                    extra_vars=extra_vars,
+                    inventory=inventory,
+                    created_at=job.created_at,
+                )
+            except Exception:
+                # Rollback Redis on DB failure for strict consistency
+                self.redis.delete(self._job_key(job.job_id))
+                raise
+
         return job
 
     def get_job(self, job_id: str) -> Job | None:
@@ -77,6 +102,20 @@ class JobStore:
         result: JobResult | None = None,
         error: str | None = None,
     ) -> None:
+        # Write to DB first for strict consistency (if DB fails, Redis unchanged)
+        if self.repository:
+            self.repository.update_status(
+                job_id,
+                status.value,
+                started_at=started_at,
+                finished_at=finished_at,
+                result_rc=result.rc if result else None,
+                result_stdout=result.stdout if result else None,
+                result_stats=result.stats if result else None,
+                error=error,
+            )
+
+        # Then update Redis
         updates = {"status": status.value}
         if started_at:
             updates["started_at"] = started_at.isoformat()

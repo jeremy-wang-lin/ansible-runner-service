@@ -20,10 +20,14 @@ def enqueue_job(
     if redis is None:
         redis = Redis()
     queue = Queue(connection=redis)
+    # Use explicit kwargs to avoid collision with rq's reserved keywords
+    # (rq uses 'job_id' internally for its own job tracking)
     queue.enqueue(
         "ansible_runner_service.worker.execute_job",
-        job_id=job_id,
-        playbook=playbook,
-        extra_vars=extra_vars,
-        inventory=inventory,
+        kwargs={
+            "job_id": job_id,
+            "playbook": playbook,
+            "extra_vars": extra_vars,
+            "inventory": inventory,
+        },
     )

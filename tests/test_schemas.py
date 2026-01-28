@@ -66,3 +66,46 @@ class TestJobDetail:
         )
         assert detail.job_id == "abc123"
         assert detail.result.rc == 0
+
+
+class TestJobSummary:
+    def test_create_summary(self):
+        from ansible_runner_service.schemas import JobSummary
+
+        summary = JobSummary(
+            job_id="test-123",
+            status="successful",
+            playbook="hello.yml",
+            created_at="2026-01-24T10:00:00Z",
+            finished_at="2026-01-24T10:00:05Z",
+        )
+
+        assert summary.job_id == "test-123"
+        assert summary.status == "successful"
+        assert summary.playbook == "hello.yml"
+        assert summary.finished_at == "2026-01-24T10:00:05Z"
+
+
+class TestJobListResponse:
+    def test_create_response(self):
+        from ansible_runner_service.schemas import JobListResponse, JobSummary
+
+        response = JobListResponse(
+            jobs=[
+                JobSummary(
+                    job_id="test-123",
+                    status="successful",
+                    playbook="hello.yml",
+                    created_at="2026-01-24T10:00:00Z",
+                    finished_at="2026-01-24T10:00:05Z",
+                )
+            ],
+            total=42,
+            limit=20,
+            offset=0,
+        )
+
+        assert len(response.jobs) == 1
+        assert response.total == 42
+        assert response.limit == 20
+        assert response.offset == 0
