@@ -15,26 +15,26 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         API Request                              │
+│                         API Request                             │
 │  { "source": { "repo": "https://...", "path": "deploy.yml" } }  │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      URL Validation                              │
+│                      URL Validation                             │
 │  1. Parse repo URL → extract host + org                         │
-│  2. Check host matches configured provider                       │
-│  3. Check org is in allowed list                                 │
+│  2. Check host matches configured provider                      │
+│  3. Check org is in allowed list                                │
 │  4. Reject if not allowed (400 Bad Request)                     │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Worker                                    │
-│  1. Look up credential for provider                              │
-│  2. Clone repo to temp directory                                 │
-│  3. Execute playbook/role                                        │
-│  4. Clean up temp directory                                      │
+│                        Worker                                   │
+│  1. Look up credential for provider                             │
+│  2. Clone repo to temp directory                                │
+│  3. Execute playbook/role                                       │
+│  4. Clean up temp directory                                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
