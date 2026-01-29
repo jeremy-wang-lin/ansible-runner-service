@@ -118,14 +118,28 @@ stringData:
     "inventory": "localhost,"
 }
 
-# Option 3: Git role source
+# Option 3: Git role source (short role name - FQCN derived from galaxy.yml)
 {
     "source": {
         "type": "role",
-        "repo": "https://gitlab.company.com/platform-team/ansible-roles.git",
+        "repo": "https://gitlab.company.com/platform-team/ansible-collection.git",
         "branch": "v2.0.0",        # optional, default: "main"
-        "path": "roles/nginx",
+        "role": "nginx",           # role name within collection
         "role_vars": {             # optional, passed to role
+            "nginx_port": 8080
+        }
+    },
+    "inventory": "webservers,"
+}
+
+# Option 4: Git role source (explicit FQCN)
+{
+    "source": {
+        "type": "role",
+        "repo": "https://gitlab.company.com/platform-team/ansible-collection.git",
+        "branch": "v2.0.0",
+        "role": "mycompany.infra.nginx",  # FQCN - used as-is
+        "role_vars": {
             "nginx_port": 8080
         }
     },
@@ -140,7 +154,8 @@ stringData:
 | `source.type` | Yes | Must be "playbook" or "role" |
 | `source.repo` | Yes | Must be valid URL from allowed provider/org |
 | `source.branch` | No | Default: "main" |
-| `source.path` | Yes | Relative path, no ".." allowed |
+| `source.path` | Yes (playbook) | Relative path, no ".." allowed. Only for type="playbook" |
+| `source.role` | Yes (role) | Role name or FQCN. Only for type="role" |
 | `source.role_vars` | No | Only for type="role" |
 
 ### Error Responses
@@ -193,7 +208,41 @@ git clone --branch main --depth 1 https://oauth2:{TOKEN}@gitlab.company.com/grou
 
 ## Role Execution
 
-For role sources, the worker generates a wrapper playbook:
+> **ADR:** See [Role Execution Strategy](adr/2026-01-29-role-execution-strategy.md) for the decision record on role format, execution strategy, and FQCN resolution.
+
+Role execution uses `ansible-galaxy` to install the collection, then generates a wrapper playbook.
+
+### Step 1: Install Collection from Git
+
+```bash
+ansible-galaxy collection install git+https://repo.git,branch -p /tmp/job-xxx/collections
+```
+
+This installs the collection (with `galaxy.yml`) into `/tmp/job-xxx/collections/`.
+
+### Step 2: Resolve FQCN
+
+```python
+def resolve_fqcn(role: str, collections_path: str) -> str:
+    """Resolve role name to FQCN.
+
+    If role contains dots (e.g., 'mycompany.infra.nginx'), treat as FQCN.
+    Otherwise, read galaxy.yml to derive namespace.collection and build FQCN.
+    """
+    if "." in role:
+        return role  # Already FQCN
+
+    # Read galaxy.yml from installed collection
+    # Find the installed collection directory
+    galaxy_files = glob(f"{collections_path}/ansible_collections/*/*/galaxy.yml")
+    with open(galaxy_files[0]) as f:
+        galaxy = yaml.safe_load(f)
+    namespace = galaxy["namespace"]
+    collection = galaxy["name"]
+    return f"{namespace}.{collection}.{role}"
+```
+
+### Step 3: Generate Wrapper Playbook
 
 ```yaml
 # Generated wrapper playbook for role execution
@@ -202,9 +251,28 @@ For role sources, the worker generates a wrapper playbook:
   hosts: all
   gather_facts: true
   roles:
-    - role: /tmp/job-xxx/roles/nginx
+    - role: mycompany.infra.nginx    # FQCN (resolved or user-specified)
       vars:
         nginx_port: 8080
+```
+
+### Step 4: Execute with Collections Path
+
+```bash
+ANSIBLE_COLLECTIONS_PATH=/tmp/job-xxx/collections \
+  ansible-playbook /tmp/job-xxx/wrapper.yml -i inventory
+```
+
+### Complete Role Flow
+
+```
+1. Validate repo URL against allowed providers/orgs
+2. ansible-galaxy collection install git+{auth_url},{branch} -p /tmp/collections
+3. Resolve FQCN: "nginx" → read galaxy.yml → "mycompany.infra.nginx"
+                  "mycompany.infra.nginx" → use as-is
+4. Generate wrapper playbook with FQCN + role_vars
+5. Run ansible-runner with ANSIBLE_COLLECTIONS_PATH set
+6. Clean up temp directory
 ```
 
 ## File Structure
@@ -291,11 +359,33 @@ logger.info(
 
 ## Database Schema
 
-No changes required. The job record stores:
-- `playbook`: For local playbooks, the filename. For Git sources, the path within repo.
-- `extra_vars`: Unchanged
+### New Columns
 
-Future consideration: Add `source_repo`, `source_branch` columns for audit trail.
+```sql
+ALTER TABLE jobs ADD COLUMN source_type VARCHAR(20) NOT NULL DEFAULT 'local';
+ALTER TABLE jobs ADD COLUMN source_repo VARCHAR(512);
+ALTER TABLE jobs ADD COLUMN source_branch VARCHAR(255);
+```
+
+Existing rows automatically get `source_type='local'` via the default.
+
+### Column Usage by Source Type
+
+| Source Type | `playbook` | `source_type` | `source_repo` | `source_branch` |
+|-------------|-----------|---------------|----------------|-----------------|
+| Local | `hello.yml` | `local` | NULL | NULL |
+| Git playbook | `deploy/app.yml` | `playbook` | `https://dev.azure.com/...` | `main` |
+| Git role | `mycompany.infra.nginx` (FQCN) | `role` | `https://gitlab.company.com/...` | `v2.0.0` |
+
+### SQLAlchemy Model Changes
+
+```python
+class JobModel(Base):
+    # ... existing columns ...
+    source_type = Column(String(20), nullable=False, default="local")
+    source_repo = Column(String(512))
+    source_branch = Column(String(255))
+```
 
 ## Testing Strategy
 
