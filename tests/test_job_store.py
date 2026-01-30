@@ -164,3 +164,93 @@ class TestJobStoreWithDB:
 
         # Verify Redis hset was NOT called (DB failed first)
         mock_redis.hset.assert_not_called()
+
+
+class TestJobStoreSourceFields:
+    @pytest.fixture
+    def mock_redis(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def mock_repo(self):
+        return MagicMock()
+
+    def test_create_job_with_source(self, mock_redis):
+        store = JobStore(mock_redis)
+        job = store.create_job(
+            playbook="deploy/app.yml",
+            extra_vars={},
+            inventory="localhost,",
+            source_type="playbook",
+            source_repo="https://dev.azure.com/xxxit/p/_git/r",
+            source_branch="main",
+        )
+        assert job.source_type == "playbook"
+        assert job.source_repo == "https://dev.azure.com/xxxit/p/_git/r"
+        assert job.source_branch == "main"
+
+    def test_create_job_default_local(self, mock_redis):
+        store = JobStore(mock_redis)
+        job = store.create_job(
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+        )
+        assert job.source_type == "local"
+        assert job.source_repo is None
+        assert job.source_branch is None
+
+    def test_create_job_with_source_writes_to_db(self, mock_redis, mock_repo):
+        store = JobStore(mock_redis, repository=mock_repo)
+        store.create_job(
+            playbook="deploy/app.yml",
+            extra_vars={},
+            inventory="localhost,",
+            source_type="playbook",
+            source_repo="https://dev.azure.com/xxxit/p/_git/r",
+            source_branch="main",
+        )
+        mock_repo.create.assert_called_once()
+        call_kwargs = mock_repo.create.call_args[1]
+        assert call_kwargs["source_type"] == "playbook"
+        assert call_kwargs["source_repo"] == "https://dev.azure.com/xxxit/p/_git/r"
+        assert call_kwargs["source_branch"] == "main"
+
+    def test_source_fields_in_redis(self, mock_redis):
+        store = JobStore(mock_redis)
+        store.create_job(
+            playbook="deploy/app.yml",
+            extra_vars={},
+            inventory="localhost,",
+            source_type="playbook",
+            source_repo="https://dev.azure.com/xxxit/p/_git/r",
+            source_branch="main",
+        )
+        # Verify Redis hset was called with source fields
+        call_args = mock_redis.hset.call_args
+        data = call_args.kwargs.get("mapping") or call_args[1].get("mapping")
+        assert data["source_type"] == "playbook"
+        assert data["source_repo"] == "https://dev.azure.com/xxxit/p/_git/r"
+        assert data["source_branch"] == "main"
+
+    def test_deserialize_job_with_source(self, mock_redis):
+        store = JobStore(mock_redis)
+        mock_redis.hgetall.return_value = {
+            b"job_id": b"test-123",
+            b"status": b"pending",
+            b"playbook": b"deploy/app.yml",
+            b"extra_vars": b'{}',
+            b"inventory": b"localhost,",
+            b"created_at": b"2026-01-29T10:00:00+00:00",
+            b"started_at": b"",
+            b"finished_at": b"",
+            b"result": b"",
+            b"error": b"",
+            b"source_type": b"playbook",
+            b"source_repo": b"https://dev.azure.com/xxxit/p/_git/r",
+            b"source_branch": b"main",
+        }
+        job = store.get_job("test-123")
+        assert job.source_type == "playbook"
+        assert job.source_repo == "https://dev.azure.com/xxxit/p/_git/r"
+        assert job.source_branch == "main"
