@@ -5,7 +5,13 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from ansible_runner_service.git_config import GitProvider
-from ansible_runner_service.git_service import build_auth_url, clone_repo
+from ansible_runner_service.git_service import (
+    build_auth_url,
+    clone_repo,
+    install_collection,
+    resolve_fqcn,
+    generate_role_wrapper_playbook,
+)
 
 
 class TestBuildAuthUrl:
@@ -131,3 +137,131 @@ class TestCloneRepo:
                     target_dir="/tmp/test-dir",
                     provider=provider,
                 )
+
+
+class TestInstallCollection:
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_install_calls_ansible_galaxy(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        provider = GitProvider(
+            type="gitlab",
+            host="gitlab.company.com",
+            orgs=["platform-team"],
+            credential_env="GITLAB_TOKEN",
+        )
+
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "token"}):
+            install_collection(
+                repo_url="https://gitlab.company.com/platform-team/collection.git",
+                branch="v2.0.0",
+                collections_dir="/tmp/collections",
+                provider=provider,
+            )
+
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0] == "ansible-galaxy"
+        assert args[1] == "collection"
+        assert args[2] == "install"
+        # Should contain git+ URL with auth and branch
+        source_arg = args[3]
+        assert source_arg.startswith("git+")
+        assert ",v2.0.0" in source_arg
+        # -p flag for install path
+        assert "-p" in args
+        assert "/tmp/collections" in args
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_install_raises_on_failure(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "ansible-galaxy", stderr="ERROR: Failed to install"
+        )
+        provider = GitProvider(
+            type="gitlab",
+            host="gitlab.company.com",
+            orgs=["platform-team"],
+            credential_env="GITLAB_TOKEN",
+        )
+
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "token"}):
+            with pytest.raises(RuntimeError, match="Collection install failed"):
+                install_collection(
+                    repo_url="https://gitlab.company.com/platform-team/col.git",
+                    branch="main",
+                    collections_dir="/tmp/collections",
+                    provider=provider,
+                )
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_install_sanitizes_credentials(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "ansible-galaxy", stderr="ERROR: secret-token auth failed"
+        )
+        provider = GitProvider(
+            type="gitlab",
+            host="gitlab.company.com",
+            orgs=["team"],
+            credential_env="GITLAB_TOKEN",
+        )
+
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "secret-token"}):
+            with pytest.raises(RuntimeError) as exc_info:
+                install_collection(
+                    repo_url="https://gitlab.company.com/team/col.git",
+                    branch="main",
+                    collections_dir="/tmp/collections",
+                    provider=provider,
+                )
+            assert "secret-token" not in str(exc_info.value)
+
+
+class TestResolveFqcn:
+    def test_fqcn_passed_through(self):
+        """If role contains dots, treat as FQCN."""
+        assert resolve_fqcn("mycompany.infra.nginx", "/tmp") == "mycompany.infra.nginx"
+
+    def test_short_name_resolved_from_galaxy_yml(self, tmp_path):
+        """Short name should be resolved by reading galaxy.yml."""
+        # Create mock installed collection structure
+        col_dir = tmp_path / "ansible_collections" / "mycompany" / "infra"
+        col_dir.mkdir(parents=True)
+        galaxy_yml = col_dir / "galaxy.yml"
+        galaxy_yml.write_text("namespace: mycompany\nname: infra\nversion: 1.0.0\n")
+
+        result = resolve_fqcn("nginx", str(tmp_path))
+        assert result == "mycompany.infra.nginx"
+
+    def test_short_name_no_galaxy_yml_raises(self, tmp_path):
+        """If no galaxy.yml found, raise error."""
+        with pytest.raises(RuntimeError, match="No galaxy.yml found"):
+            resolve_fqcn("nginx", str(tmp_path))
+
+
+class TestGenerateRoleWrapperPlaybook:
+    def test_generate_wrapper(self):
+        content = generate_role_wrapper_playbook(
+            fqcn="mycompany.infra.nginx",
+            role_vars={"nginx_port": 8080},
+        )
+        assert "mycompany.infra.nginx" in content
+        assert "nginx_port" in content
+        assert "8080" in content
+        assert "hosts: all" in content
+
+    def test_generate_wrapper_no_vars(self):
+        content = generate_role_wrapper_playbook(
+            fqcn="mycompany.infra.nginx",
+            role_vars={},
+        )
+        assert "mycompany.infra.nginx" in content
+        assert "vars:" not in content
+
+    def test_generate_wrapper_is_valid_yaml(self):
+        import yaml
+        content = generate_role_wrapper_playbook(
+            fqcn="mycompany.infra.nginx",
+            role_vars={"port": 80, "ssl": True},
+        )
+        parsed = yaml.safe_load(content)
+        assert isinstance(parsed, list)
+        assert parsed[0]["hosts"] == "all"
