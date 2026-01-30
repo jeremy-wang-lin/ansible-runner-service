@@ -139,3 +139,119 @@ class TestExecuteJobWithDB:
 
         # Verify session was closed
         mock_session.close.assert_called_once()
+
+
+class TestExecuteJobWithGitSource:
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
+    @patch("ansible_runner_service.worker._execute_git_playbook")
+    def test_git_playbook_source(
+        self,
+        mock_exec_git_playbook,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
+    ):
+        mock_store = MagicMock()
+        mock_job_store_class.return_value = mock_store
+        mock_exec_git_playbook.return_value = RunResult(
+            status="successful", rc=0, stdout="ok", stats={},
+        )
+
+        source_config = {
+            "type": "playbook",
+            "repo": "https://dev.azure.com/xxxit/p/_git/r",
+            "branch": "main",
+            "path": "deploy/app.yml",
+        }
+
+        execute_job(
+            job_id="test-git-123",
+            playbook="deploy/app.yml",
+            extra_vars={},
+            inventory="localhost,",
+            source_config=source_config,
+        )
+
+        mock_exec_git_playbook.assert_called_once_with(source_config, {}, "localhost,")
+
+        calls = mock_store.update_status.call_args_list
+        assert calls[0].args[1] == JobStatus.RUNNING
+        assert calls[1].args[1] == JobStatus.SUCCESSFUL
+
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
+    @patch("ansible_runner_service.worker._execute_git_role")
+    def test_git_role_source(
+        self,
+        mock_exec_git_role,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
+    ):
+        mock_store = MagicMock()
+        mock_job_store_class.return_value = mock_store
+        mock_exec_git_role.return_value = RunResult(
+            status="successful", rc=0, stdout="ok", stats={},
+        )
+
+        source_config = {
+            "type": "role",
+            "repo": "https://gitlab.company.com/platform-team/col.git",
+            "branch": "v2.0.0",
+            "role": "nginx",
+            "role_vars": {"nginx_port": 8080},
+        }
+
+        execute_job(
+            job_id="test-role-123",
+            playbook="mycompany.infra.nginx",
+            extra_vars={},
+            inventory="localhost,",
+            source_config=source_config,
+        )
+
+        mock_exec_git_role.assert_called_once_with(source_config, {}, "localhost,")
+        calls = mock_store.update_status.call_args_list
+        assert calls[1].args[1] == JobStatus.SUCCESSFUL
+
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
+    @patch("ansible_runner_service.worker._execute_local")
+    def test_local_source_unchanged(
+        self,
+        mock_exec_local,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
+    ):
+        """Legacy local source still works when source_config is None."""
+        mock_store = MagicMock()
+        mock_job_store_class.return_value = mock_store
+        mock_exec_local.return_value = RunResult(
+            status="successful", rc=0, stdout="ok", stats={},
+        )
+
+        execute_job(
+            job_id="test-local-123",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+        )
+
+        mock_exec_local.assert_called_once_with("hello.yml", {}, "localhost,")
