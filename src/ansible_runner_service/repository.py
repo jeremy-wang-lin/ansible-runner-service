@@ -19,6 +19,9 @@ class JobRepository:
         extra_vars: dict[str, Any],
         inventory: str,
         created_at: datetime,
+        source_type: str = "local",
+        source_repo: str | None = None,
+        source_branch: str | None = None,
     ) -> JobModel:
         """Create a new job record."""
         job = JobModel(
@@ -28,6 +31,9 @@ class JobRepository:
             extra_vars=extra_vars,
             inventory=inventory,
             created_at=created_at,
+            source_type=source_type,
+            source_repo=source_repo,
+            source_branch=source_branch,
         )
         self.session.add(job)
         self.session.commit()

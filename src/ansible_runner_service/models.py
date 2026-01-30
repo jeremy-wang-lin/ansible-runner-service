@@ -25,3 +25,10 @@ class JobModel(Base):
     result_stdout: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_stats: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False, insert_default="local")
+    source_repo: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("source_type", "local")
+        super().__init__(**kwargs)
