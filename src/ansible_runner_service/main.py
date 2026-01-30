@@ -7,10 +7,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from redis import Redis
 
+from ansible_runner_service.git_config import load_providers, validate_repo_url
 from ansible_runner_service.job_store import JobStore
 from ansible_runner_service.queue import enqueue_job
 from ansible_runner_service.runner import run_playbook
 from ansible_runner_service.schemas import (
+    GitPlaybookSource,
+    GitRoleSource,
     JobRequest,
     JobResponse,
     JobSubmitResponse,
@@ -119,6 +122,14 @@ def submit_job(
     redis: Redis = Depends(get_redis),
 ) -> Union[JobSubmitResponse, JobResponse]:
     """Submit a playbook job for execution."""
+    if request.source:
+        return _handle_git_source(request, sync, job_store, redis)
+    else:
+        return _handle_local_source(request, sync, playbooks_dir, job_store, redis)
+
+
+def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
+    """Handle legacy local playbook source."""
     # Block path traversal attempts
     if ".." in request.playbook or request.playbook.startswith("/"):
         raise HTTPException(status_code=400, detail="Invalid playbook name")
@@ -131,7 +142,6 @@ def submit_job(
         )
 
     if sync:
-        # Synchronous execution
         result = run_playbook(
             playbook=request.playbook,
             extra_vars=request.extra_vars,
@@ -148,7 +158,6 @@ def submit_job(
             ).model_dump(),
         )
 
-    # Async execution (default)
     job = job_store.create_job(
         playbook=request.playbook,
         extra_vars=request.extra_vars,
@@ -160,6 +169,72 @@ def submit_job(
         playbook=request.playbook,
         extra_vars=request.extra_vars,
         inventory=request.inventory,
+        redis=redis,
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content=JobSubmitResponse(
+            job_id=job.job_id,
+            status=job.status.value,
+            created_at=job.created_at.isoformat(),
+        ).model_dump(),
+    )
+
+
+def _handle_git_source(request, sync, job_store, redis):
+    """Handle Git playbook/role source."""
+    source = request.source
+
+    # Validate repo URL against allowed providers
+    providers = load_providers()
+    try:
+        validate_repo_url(source.repo, providers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Determine playbook name and source_config for the queue
+    if isinstance(source, GitPlaybookSource):
+        playbook = source.path
+        source_config = {
+            "type": "playbook",
+            "repo": source.repo,
+            "branch": source.branch,
+            "path": source.path,
+        }
+    elif isinstance(source, GitRoleSource):
+        playbook = source.role
+        source_config = {
+            "type": "role",
+            "repo": source.repo,
+            "branch": source.branch,
+            "role": source.role,
+            "role_vars": source.role_vars,
+        }
+    else:
+        raise HTTPException(status_code=400, detail="Unknown source type")
+
+    if sync:
+        raise HTTPException(
+            status_code=400,
+            detail="Sync mode not supported for Git sources. Use async mode.",
+        )
+
+    job = job_store.create_job(
+        playbook=playbook,
+        extra_vars=request.extra_vars,
+        inventory=request.inventory,
+        source_type=source.type,
+        source_repo=source.repo,
+        source_branch=source.branch,
+    )
+
+    enqueue_job(
+        job_id=job.job_id,
+        playbook=playbook,
+        extra_vars=request.extra_vars,
+        inventory=request.inventory,
+        source_config=source_config,
         redis=redis,
     )
 
