@@ -25,3 +25,42 @@ class TestEnqueueJob:
         assert job_kwargs["playbook"] == "hello.yml"
         assert job_kwargs["extra_vars"] == {"name": "World"}
         assert job_kwargs["inventory"] == "localhost,"
+
+
+class TestEnqueueJobWithSource:
+    def test_enqueue_with_source_config(self):
+        mock_queue = MagicMock()
+
+        with patch("ansible_runner_service.queue.Queue", return_value=mock_queue):
+            enqueue_job(
+                job_id="test-git-123",
+                playbook="deploy/app.yml",
+                extra_vars={},
+                inventory="localhost,",
+                source_config={
+                    "type": "playbook",
+                    "repo": "https://dev.azure.com/xxxit/p/_git/r",
+                    "branch": "main",
+                    "path": "deploy/app.yml",
+                },
+            )
+
+        call_args = mock_queue.enqueue.call_args
+        job_kwargs = call_args.kwargs["kwargs"]
+        assert job_kwargs["source_config"]["type"] == "playbook"
+        assert job_kwargs["source_config"]["repo"] == "https://dev.azure.com/xxxit/p/_git/r"
+
+    def test_enqueue_without_source_config(self):
+        mock_queue = MagicMock()
+
+        with patch("ansible_runner_service.queue.Queue", return_value=mock_queue):
+            enqueue_job(
+                job_id="test-local-123",
+                playbook="hello.yml",
+                extra_vars={},
+                inventory="localhost,",
+            )
+
+        call_args = mock_queue.enqueue.call_args
+        job_kwargs = call_args.kwargs["kwargs"]
+        assert job_kwargs["source_config"] is None
