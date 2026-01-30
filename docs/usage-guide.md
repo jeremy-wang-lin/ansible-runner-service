@@ -131,6 +131,61 @@ curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
   }'
 ```
 
+### Git Playbook Source
+
+Execute a playbook from a Git repository (async only):
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "type": "playbook",
+      "repo": "https://dev.azure.com/xxxit/project/_git/ansible-playbooks",
+      "branch": "main",
+      "path": "deploy/app.yml"
+    },
+    "extra_vars": {"env": "prod"},
+    "inventory": "localhost,"
+  }'
+```
+
+### Git Role Source
+
+Execute an Ansible role from a collection in a Git repository:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "type": "role",
+      "repo": "https://gitlab.company.com/platform-team/ansible-collection.git",
+      "branch": "v2.0.0",
+      "role": "nginx",
+      "role_vars": {"nginx_port": 8080}
+    },
+    "inventory": "webservers,"
+  }'
+```
+
+The role name can be a short name (e.g., `nginx`) or a fully qualified collection name (e.g., `mycompany.infra.nginx`). Short names are automatically resolved using the collection's `galaxy.yml`.
+
+### Configuring Git Providers
+
+Git sources require provider configuration. Set the `GIT_PROVIDERS` environment variable:
+
+```bash
+export GIT_PROVIDERS='[
+  {"type": "azure", "host": "dev.azure.com", "orgs": ["xxxit"], "credential_env": "AZURE_PAT"},
+  {"type": "gitlab", "host": "gitlab.company.com", "orgs": ["platform-team"], "credential_env": "GITLAB_TOKEN"}
+]'
+export AZURE_PAT="your-azure-pat-token"
+export GITLAB_TOKEN="your-gitlab-access-token"
+```
+
+See `config/git_providers.example.yaml` for a full example.
+
 ## Job Statuses
 
 | Status | Description |
@@ -238,6 +293,8 @@ docker-compose exec mariadb mariadb -uroot -pdevpassword ansible_runner \
 ├── alembic/                    # Database migrations
 │   └── versions/
 ├── alembic.ini                 # Alembic configuration
+├── config/
+│   └── git_providers.example.yaml  # Example Git provider config
 ├── src/ansible_runner_service/
 │   ├── main.py                 # FastAPI app and endpoints
 │   ├── runner.py               # Ansible runner wrapper
@@ -247,7 +304,9 @@ docker-compose exec mariadb mariadb -uroot -pdevpassword ansible_runner \
 │   ├── worker.py               # Worker job execution
 │   ├── database.py             # SQLAlchemy engine and session
 │   ├── models.py               # ORM models (JobModel)
-│   └── repository.py           # Database CRUD operations
+│   ├── repository.py           # Database CRUD operations
+│   ├── git_config.py           # Git provider configuration and URL validation
+│   └── git_service.py          # Git clone, collection install, FQCN resolution
 └── tests/
     ├── test_api.py             # API endpoint tests
     ├── test_integration.py     # Full flow + E2E tests (require Redis + worker)
@@ -257,7 +316,9 @@ docker-compose exec mariadb mariadb -uroot -pdevpassword ansible_runner \
     ├── test_queue.py           # Queue tests
     ├── test_runner.py          # Runner tests
     ├── test_schemas.py         # Schema tests
-    └── test_worker.py          # Worker tests
+    ├── test_worker.py          # Worker tests
+    ├── test_git_config.py      # Git provider config tests
+    └── test_git_service.py     # Git service tests
 ```
 
 ## Troubleshooting
