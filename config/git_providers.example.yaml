@@ -1,0 +1,27 @@
+# Example Git provider configuration.
+#
+# To use, set the GIT_PROVIDERS environment variable to a JSON string:
+#
+#   export GIT_PROVIDERS='[
+#     {"type": "azure", "host": "dev.azure.com", "orgs": ["xxxit", "xxxplatform"], "credential_env": "AZURE_PAT"},
+#     {"type": "gitlab", "host": "gitlab.company.com", "orgs": ["platform-team", "infra"], "credential_env": "GITLAB_TOKEN"}
+#   ]'
+#
+# Then set the credential environment variables:
+#   export AZURE_PAT="your-azure-pat-token"
+#   export GITLAB_TOKEN="your-gitlab-access-token"
+#
+providers:
+  - type: azure
+    host: dev.azure.com
+    orgs:
+      - xxxit
+      - xxxplatform
+    credential_env: AZURE_PAT
+
+  - type: gitlab
+    host: gitlab.company.com
+    orgs:
+      - platform-team
+      - infra
+    credential_env: GITLAB_TOKEN
