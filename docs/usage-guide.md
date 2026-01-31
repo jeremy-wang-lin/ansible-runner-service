@@ -35,6 +35,14 @@ docker-compose ps
 #   mariadb  running (healthy)
 ```
 
+### 4. Run database migrations
+
+```bash
+alembic upgrade head
+```
+
+This creates the required tables in MariaDB.
+
 ## Running the Service
 
 ### Start the API server
@@ -205,17 +213,18 @@ Interactive API docs available at:
 
 ### All tests (unit + integration)
 
-Requires Redis to be running:
+Requires Redis and MariaDB running with migrations applied:
 
 ```bash
 docker-compose up -d
+alembic upgrade head
 pytest tests/ -v
 ```
 
-### Unit tests only (no Redis required)
+### Unit tests only (no Redis or MariaDB required)
 
 ```bash
-pytest tests/ -v --ignore=tests/test_integration.py
+pytest tests/ -v --ignore=tests/test_integration.py --ignore=tests/test_db_integration.py --ignore=tests/test_queue_integration.py
 ```
 
 ### Integration tests only
@@ -288,6 +297,8 @@ docker-compose exec mariadb mariadb -uroot -pdevpassword ansible_runner \
 ```
 .
 ├── docker-compose.yml          # Redis + MariaDB containers
+├── docker/
+│   └── init-test-db.sql        # Creates ansible_runner_test DB on first start
 ├── playbooks/                  # Ansible playbooks
 │   └── hello.yml
 ├── alembic/                    # Database migrations

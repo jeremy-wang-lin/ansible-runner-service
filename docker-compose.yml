@@ -18,6 +18,7 @@ services:
       MYSQL_DATABASE: ansible_runner
     volumes:
       - mariadb_data:/var/lib/mysql
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
     healthcheck:
       test: ["CMD", "mariadb-admin", "ping", "-h", "localhost"]
       interval: 5s
