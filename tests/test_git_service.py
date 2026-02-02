@@ -302,6 +302,16 @@ class TestResolveFqcn:
         result = resolve_fqcn("nginx", str(tmp_path))
         assert result == "mycompany.infra.nginx"
 
+    def test_single_dot_not_treated_as_fqcn(self, tmp_path):
+        """Role with single dot (e.g., 'nginx.conf_setup') is NOT a FQCN."""
+        col_dir = tmp_path / "ansible_collections" / "mycompany" / "infra"
+        col_dir.mkdir(parents=True)
+        galaxy_yml = col_dir / "galaxy.yml"
+        galaxy_yml.write_text("namespace: mycompany\nname: infra\nversion: 1.0.0\n")
+
+        result = resolve_fqcn("nginx.conf_setup", str(tmp_path))
+        assert result == "mycompany.infra.nginx.conf_setup"
+
     def test_short_name_no_galaxy_yml_raises(self, tmp_path):
         """If no galaxy.yml found, raise error."""
         with pytest.raises(RuntimeError, match="No galaxy.yml found"):

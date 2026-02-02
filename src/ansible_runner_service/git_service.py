@@ -150,7 +150,7 @@ def resolve_fqcn(role: str, collections_dir: str) -> str:
     If role contains dots (e.g., 'mycompany.infra.nginx'), return as-is.
     Otherwise, read galaxy.yml from the installed collection to derive FQCN.
     """
-    if "." in role:
+    if role.count(".") >= 2:
         return role
 
     # Find galaxy.yml in installed collections
