@@ -192,6 +192,8 @@ export AZURE_PAT="your-azure-pat-token"
 export GITLAB_TOKEN="your-gitlab-access-token"
 ```
 
+**Important:** The API server and rq worker must share the same `GIT_PROVIDERS` and credential environment variables. The worker re-validates the repo URL to look up credentials for cloning. Mismatched configuration between API and worker will cause jobs to fail.
+
 See `config/git_providers.example.yaml` for a full example.
 
 ## Job Statuses

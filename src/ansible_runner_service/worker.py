@@ -50,7 +50,12 @@ def _execute_local(playbook, extra_vars, inventory):
 
 
 def _execute_git_playbook(source_config, extra_vars, inventory):
-    """Clone repo and execute playbook from it."""
+    """Clone repo and execute playbook from it.
+
+    Note: provider validation here serves two purposes — security
+    (defense-in-depth) and credential lookup.  The API and worker
+    MUST share the same GIT_PROVIDERS configuration.
+    """
     providers = load_providers()
     provider = validate_repo_url(source_config["repo"], providers)
 
@@ -81,7 +86,10 @@ def _execute_git_playbook(source_config, extra_vars, inventory):
 
 
 def _execute_git_role(source_config, extra_vars, inventory):
-    """Install collection and execute role."""
+    """Install collection and execute role.
+
+    See _execute_git_playbook docstring for note on dual validation.
+    """
     providers = load_providers()
     provider = validate_repo_url(source_config["repo"], providers)
 
