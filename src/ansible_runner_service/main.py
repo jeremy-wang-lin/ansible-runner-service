@@ -193,7 +193,9 @@ def _handle_git_source(request, sync, job_store, redis):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Determine playbook name and source_config for the queue
+    # Determine playbook name and source_config for the queue.
+    # Note: the `playbook` field stores the role name for role sources.
+    # Use `source_type` column to disambiguate in queries.
     if isinstance(source, GitPlaybookSource):
         playbook = source.path
         source_config = {
