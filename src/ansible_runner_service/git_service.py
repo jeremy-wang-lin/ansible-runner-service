@@ -1,5 +1,8 @@
 # src/ansible_runner_service/git_service.py
+import os
+import stat
 import subprocess
+import tempfile
 from glob import glob
 from urllib.parse import urlparse, urlunparse
 
@@ -8,25 +11,52 @@ import yaml
 from ansible_runner_service.git_config import GitProvider
 
 
-def build_auth_url(repo_url: str, provider: GitProvider, credential: str) -> str:
-    """Build authenticated Git URL.
+def _build_username_url(repo_url: str, provider: GitProvider) -> str:
+    """Build Git URL with username only (no credential).
 
-    Azure DevOps: https://{PAT}@dev.azure.com/org/project/_git/repo
-    GitLab: https://oauth2:{TOKEN}@gitlab.company.com/group/repo.git
+    The credential is passed separately via GIT_ASKPASS to avoid
+    exposing it in command-line arguments (visible via ps aux).
+
+    Azure DevOps: https://pat@dev.azure.com/org/project/_git/repo
+    GitLab: https://oauth2@gitlab.company.com/group/repo.git
     """
     parsed = urlparse(repo_url)
 
     if provider.type == "azure":
-        netloc = f"{credential}@{parsed.hostname}"
+        username = "pat"
     elif provider.type == "gitlab":
-        netloc = f"oauth2:{credential}@{parsed.hostname}"
+        username = "oauth2"
     else:
         raise ValueError(f"Unknown provider type: {provider.type}")
 
+    netloc = f"{username}@{parsed.hostname}"
     if parsed.port:
         netloc += f":{parsed.port}"
 
     return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+
+
+def _create_askpass_script(tmpdir: str) -> str:
+    """Create a GIT_ASKPASS script that reads credential from env.
+
+    The script itself contains no secrets — it outputs the value of
+    the _GIT_CREDENTIAL environment variable when git prompts for a password.
+    """
+    script_path = os.path.join(tmpdir, "askpass.sh")
+    with open(script_path, "w") as f:
+        f.write('#!/bin/sh\nprintf \'%s\\n\' "$_GIT_CREDENTIAL"\n')
+    os.chmod(script_path, stat.S_IRWXU)
+    return script_path
+
+
+def _subprocess_env(askpass_path: str, credential: str) -> dict:
+    """Build subprocess environment with GIT_ASKPASS credential passing."""
+    return {
+        **os.environ,
+        "GIT_ASKPASS": askpass_path,
+        "GIT_TERMINAL_PROMPT": "0",
+        "_GIT_CREDENTIAL": credential,
+    }
 
 
 def clone_repo(
@@ -38,33 +68,38 @@ def clone_repo(
     """Clone a Git repo with provider-specific authentication.
 
     Uses --depth 1 --single-branch for minimal clone.
+    Credential is passed via GIT_ASKPASS, never in command-line arguments.
     """
     credential = provider.get_credential()
-    auth_url = build_auth_url(repo_url, provider, credential)
+    clone_url = _build_username_url(repo_url, provider)
 
     cmd = [
         "git", "clone",
         "--depth", "1",
         "--branch", branch,
         "--single-branch",
-        auth_url,
+        clone_url,
         target_dir,
     ]
 
-    try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except subprocess.CalledProcessError as e:
-        # Sanitize error message to remove credentials
-        safe_msg = e.stderr.replace(credential, "***") if e.stderr else "Unknown error"
-        raise RuntimeError(f"Git clone failed: {safe_msg}") from None
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Git clone timed out after 120 seconds") from None
+    with tempfile.TemporaryDirectory() as tmpdir:
+        askpass_path = _create_askpass_script(tmpdir)
+        env = _subprocess_env(askpass_path, credential)
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+        except subprocess.CalledProcessError as e:
+            safe_msg = e.stderr.replace(credential, "***") if e.stderr else "Unknown error"
+            raise RuntimeError(f"Git clone failed: {safe_msg}") from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Git clone timed out after 120 seconds") from None
 
 
 def install_collection(
@@ -73,12 +108,15 @@ def install_collection(
     collections_dir: str,
     provider: GitProvider,
 ) -> None:
-    """Install an Ansible collection from a Git repo using ansible-galaxy."""
+    """Install an Ansible collection from a Git repo using ansible-galaxy.
+
+    Credential is passed via GIT_ASKPASS, never in command-line arguments.
+    """
     credential = provider.get_credential()
-    auth_url = build_auth_url(repo_url, provider, credential)
+    clone_url = _build_username_url(repo_url, provider)
 
     # ansible-galaxy expects: git+https://url,branch
-    source = f"git+{auth_url},{branch}"
+    source = f"git+{clone_url},{branch}"
 
     cmd = [
         "ansible-galaxy", "collection", "install",
@@ -86,19 +124,24 @@ def install_collection(
         "-p", collections_dir,
     ]
 
-    try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except subprocess.CalledProcessError as e:
-        safe_msg = e.stderr.replace(credential, "***") if e.stderr else "Unknown error"
-        raise RuntimeError(f"Collection install failed: {safe_msg}") from None
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Collection install timed out after 120 seconds") from None
+    with tempfile.TemporaryDirectory() as tmpdir:
+        askpass_path = _create_askpass_script(tmpdir)
+        env = _subprocess_env(askpass_path, credential)
+
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+        except subprocess.CalledProcessError as e:
+            safe_msg = e.stderr.replace(credential, "***") if e.stderr else "Unknown error"
+            raise RuntimeError(f"Collection install failed: {safe_msg}") from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Collection install timed out after 120 seconds") from None
 
 
 def resolve_fqcn(role: str, collections_dir: str) -> str:

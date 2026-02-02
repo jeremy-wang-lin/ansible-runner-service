@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 from ansible_runner_service.git_config import GitProvider
 from ansible_runner_service.git_service import (
-    build_auth_url,
+    _build_username_url,
     clone_repo,
     install_collection,
     resolve_fqcn,
@@ -14,34 +14,34 @@ from ansible_runner_service.git_service import (
 )
 
 
-class TestBuildAuthUrl:
-    def test_azure_pat_url(self):
+class TestBuildUsernameUrl:
+    def test_azure_url_has_username_no_credential(self):
         provider = GitProvider(
             type="azure",
             host="dev.azure.com",
             orgs=["xxxit"],
             credential_env="AZURE_PAT",
         )
-        url = build_auth_url(
+        url = _build_username_url(
             "https://dev.azure.com/xxxit/project/_git/repo",
             provider,
-            "my-pat-token",
         )
-        assert url == "https://my-pat-token@dev.azure.com/xxxit/project/_git/repo"
+        assert url == "https://pat@dev.azure.com/xxxit/project/_git/repo"
+        assert "my-pat-token" not in url
 
-    def test_gitlab_token_url(self):
+    def test_gitlab_url_has_username_no_credential(self):
         provider = GitProvider(
             type="gitlab",
             host="gitlab.company.com",
             orgs=["platform-team"],
             credential_env="GITLAB_TOKEN",
         )
-        url = build_auth_url(
+        url = _build_username_url(
             "https://gitlab.company.com/platform-team/repo.git",
             provider,
-            "glpat-xxx",
         )
-        assert url == "https://oauth2:glpat-xxx@gitlab.company.com/platform-team/repo.git"
+        assert url == "https://oauth2@gitlab.company.com/platform-team/repo.git"
+        assert "glpat" not in url
 
 
 class TestCloneRepo:
@@ -71,9 +71,54 @@ class TestCloneRepo:
         assert "--branch" in args
         assert "main" in args
         assert "/tmp/test-dir" in args
-        # Auth URL should contain token
-        auth_url = [a for a in args if "dev.azure.com" in a][0]
-        assert "my-token@" in auth_url
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_clone_credential_not_in_args(self, mock_run):
+        """Credential must not appear in command-line arguments (visible via ps aux)."""
+        mock_run.return_value = MagicMock(returncode=0)
+        provider = GitProvider(
+            type="azure",
+            host="dev.azure.com",
+            orgs=["xxxit"],
+            credential_env="AZURE_PAT",
+        )
+
+        with patch.dict(os.environ, {"AZURE_PAT": "super-secret-pat"}):
+            clone_repo(
+                repo_url="https://dev.azure.com/xxxit/project/_git/repo",
+                branch="main",
+                target_dir="/tmp/test-dir",
+                provider=provider,
+            )
+
+        args = mock_run.call_args[0][0]
+        args_str = " ".join(args)
+        assert "super-secret-pat" not in args_str
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_clone_passes_credential_via_env(self, mock_run):
+        """Credential must be passed via GIT_ASKPASS + env var, not command line."""
+        mock_run.return_value = MagicMock(returncode=0)
+        provider = GitProvider(
+            type="azure",
+            host="dev.azure.com",
+            orgs=["xxxit"],
+            credential_env="AZURE_PAT",
+        )
+
+        with patch.dict(os.environ, {"AZURE_PAT": "my-token"}):
+            clone_repo(
+                repo_url="https://dev.azure.com/xxxit/project/_git/repo",
+                branch="main",
+                target_dir="/tmp/test-dir",
+                provider=provider,
+            )
+
+        call_kwargs = mock_run.call_args[1]
+        env = call_kwargs["env"]
+        assert "GIT_ASKPASS" in env
+        assert env["_GIT_CREDENTIAL"] == "my-token"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
 
     @patch("ansible_runner_service.git_service.subprocess.run")
     def test_clone_raises_on_failure(self, mock_run):
@@ -163,13 +208,39 @@ class TestInstallCollection:
         assert args[0] == "ansible-galaxy"
         assert args[1] == "collection"
         assert args[2] == "install"
-        # Should contain git+ URL with auth and branch
+        # Should contain git+ URL with branch
         source_arg = args[3]
         assert source_arg.startswith("git+")
         assert ",v2.0.0" in source_arg
+        # Credential must NOT be in command-line args
+        assert "token" not in source_arg
         # -p flag for install path
         assert "-p" in args
         assert "/tmp/collections" in args
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_install_passes_credential_via_env(self, mock_run):
+        """Credential must be passed via GIT_ASKPASS, not command line."""
+        mock_run.return_value = MagicMock(returncode=0)
+        provider = GitProvider(
+            type="gitlab",
+            host="gitlab.company.com",
+            orgs=["platform-team"],
+            credential_env="GITLAB_TOKEN",
+        )
+
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "secret-token"}):
+            install_collection(
+                repo_url="https://gitlab.company.com/platform-team/col.git",
+                branch="main",
+                collections_dir="/tmp/collections",
+                provider=provider,
+            )
+
+        call_kwargs = mock_run.call_args[1]
+        env = call_kwargs["env"]
+        assert "GIT_ASKPASS" in env
+        assert env["_GIT_CREDENTIAL"] == "secret-token"
 
     @patch("ansible_runner_service.git_service.subprocess.run")
     def test_install_raises_on_failure(self, mock_run):
