@@ -119,3 +119,15 @@ class TestValidateRepoUrl:
     def test_empty_providers_rejects_all(self):
         with pytest.raises(ValueError, match="not configured"):
             validate_repo_url("https://dev.azure.com/xxxit/p/_git/r", [])
+
+    def test_reject_non_https_scheme(self, providers):
+        with pytest.raises(ValueError, match="HTTPS"):
+            validate_repo_url("http://dev.azure.com/xxxit/p/_git/r", providers)
+
+    def test_reject_file_scheme(self, providers):
+        with pytest.raises(ValueError, match="HTTPS"):
+            validate_repo_url("file://dev.azure.com/xxxit/p/_git/r", providers)
+
+    def test_reject_ssh_scheme(self, providers):
+        with pytest.raises(ValueError, match="HTTPS"):
+            validate_repo_url("ssh://dev.azure.com/xxxit/p/_git/r", providers)

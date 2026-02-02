@@ -50,6 +50,10 @@ def validate_repo_url(url: str, providers: list[GitProvider]) -> GitProvider:
     Raises ValueError if not allowed.
     """
     parsed = urlparse(url)
+
+    if parsed.scheme != "https":
+        raise ValueError("Only HTTPS repository URLs are allowed")
+
     host = parsed.hostname or ""
 
     # Find matching provider
