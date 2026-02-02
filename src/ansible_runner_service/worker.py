@@ -18,6 +18,7 @@ from ansible_runner_service.git_service import (
     resolve_fqcn,
     generate_role_wrapper_playbook,
 )
+from ansible_runner_service.schemas import PlaybookSourceConfig, RoleSourceConfig, SourceConfig
 
 
 # Engine singleton for connection reuse
@@ -49,7 +50,7 @@ def _execute_local(playbook, extra_vars, inventory):
     )
 
 
-def _execute_git_playbook(source_config, extra_vars, inventory):
+def _execute_git_playbook(source_config: PlaybookSourceConfig, extra_vars, inventory):
     """Clone repo and execute playbook from it.
 
     Note: provider validation here serves two purposes — security
@@ -85,7 +86,7 @@ def _execute_git_playbook(source_config, extra_vars, inventory):
         )
 
 
-def _execute_git_role(source_config, extra_vars, inventory):
+def _execute_git_role(source_config: RoleSourceConfig, extra_vars, inventory):
     """Install collection and execute role.
 
     See _execute_git_playbook docstring for note on dual validation.
@@ -125,7 +126,7 @@ def execute_job(
     playbook: str,
     extra_vars: dict[str, Any],
     inventory: str,
-    source_config: dict[str, Any] | None = None,
+    source_config: SourceConfig | None = None,
 ) -> None:
     """Execute a job - called by rq worker."""
     engine = get_engine_singleton()

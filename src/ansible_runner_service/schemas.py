@@ -1,7 +1,25 @@
 # src/ansible_runner_service/schemas.py
-from typing import Any, Annotated, Literal, Union
+from typing import Any, Annotated, Literal, TypedDict, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class PlaybookSourceConfig(TypedDict):
+    type: Literal["playbook"]
+    repo: str
+    branch: str
+    path: str
+
+
+class RoleSourceConfig(TypedDict):
+    type: Literal["role"]
+    repo: str
+    branch: str
+    role: str
+    role_vars: dict[str, Any]
+
+
+SourceConfig = PlaybookSourceConfig | RoleSourceConfig
 
 
 class GitPlaybookSource(BaseModel):

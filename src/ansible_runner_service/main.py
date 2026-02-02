@@ -21,6 +21,9 @@ from ansible_runner_service.schemas import (
     JobResultSchema,
     JobSummary,
     JobListResponse,
+    PlaybookSourceConfig,
+    RoleSourceConfig,
+    SourceConfig,
 )
 from ansible_runner_service.repository import JobRepository
 from ansible_runner_service.database import get_engine, get_session
@@ -196,23 +199,24 @@ def _handle_git_source(request, sync, job_store, redis):
     # Determine playbook name and source_config for the queue.
     # Note: the `playbook` field stores the role name for role sources.
     # Use `source_type` column to disambiguate in queries.
+    source_config: SourceConfig
     if isinstance(source, GitPlaybookSource):
         playbook = source.path
-        source_config = {
-            "type": "playbook",
-            "repo": source.repo,
-            "branch": source.branch,
-            "path": source.path,
-        }
+        source_config = PlaybookSourceConfig(
+            type="playbook",
+            repo=source.repo,
+            branch=source.branch,
+            path=source.path,
+        )
     elif isinstance(source, GitRoleSource):
         playbook = source.role
-        source_config = {
-            "type": "role",
-            "repo": source.repo,
-            "branch": source.branch,
-            "role": source.role,
-            "role_vars": source.role_vars,
-        }
+        source_config = RoleSourceConfig(
+            type="role",
+            repo=source.repo,
+            branch=source.branch,
+            role=source.role,
+            role_vars=source.role_vars,
+        )
     else:
         raise HTTPException(status_code=400, detail="Unknown source type")
 
