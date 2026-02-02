@@ -65,6 +65,14 @@ def _execute_git_playbook(source_config, extra_vars, inventory):
 
         playbook_path = os.path.join(repo_dir, source_config["path"])
 
+        # Verify resolved path stays inside repo_dir (blocks symlink escapes)
+        resolved = Path(playbook_path).resolve()
+        repo_root = Path(repo_dir).resolve()
+        if not resolved.is_relative_to(repo_root):
+            raise RuntimeError(
+                f"Playbook path resolves outside repo directory"
+            )
+
         return run_playbook(
             playbook=playbook_path,
             extra_vars=extra_vars,

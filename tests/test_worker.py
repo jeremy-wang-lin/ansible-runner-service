@@ -1,4 +1,5 @@
 # tests/test_worker.py
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
@@ -139,6 +140,43 @@ class TestExecuteJobWithDB:
 
         # Verify session was closed
         mock_session.close.assert_called_once()
+
+
+class TestPathTraversalProtection:
+    @patch("ansible_runner_service.worker.validate_repo_url")
+    @patch("ansible_runner_service.worker.load_providers")
+    @patch("ansible_runner_service.worker.clone_repo")
+    def test_symlink_escape_blocked(
+        self,
+        mock_clone,
+        mock_load_providers,
+        mock_validate,
+        tmp_path,
+    ):
+        """Symlink inside cloned repo must not escape repo_dir."""
+        mock_validate.return_value = MagicMock()
+
+        # Simulate clone: create repo_dir with a symlink that escapes
+        def fake_clone(repo_url, branch, target_dir, provider):
+            os.makedirs(target_dir)
+            # Create a symlink pointing outside the repo
+            escape_target = tmp_path / "secret"
+            escape_target.mkdir()
+            (escape_target / "playbook.yml").write_text("---")
+            os.symlink(str(escape_target), os.path.join(target_dir, "escape"))
+
+        mock_clone.side_effect = fake_clone
+
+        source_config = {
+            "type": "playbook",
+            "repo": "https://dev.azure.com/xxxit/p/_git/r",
+            "branch": "main",
+            "path": "escape/playbook.yml",
+        }
+
+        from ansible_runner_service.worker import _execute_git_playbook
+        with pytest.raises(RuntimeError, match="outside.*repo"):
+            _execute_git_playbook(source_config, {}, "localhost,")
 
 
 class TestExecuteJobWithGitSource:
