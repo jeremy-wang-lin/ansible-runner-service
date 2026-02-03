@@ -178,6 +178,37 @@ class TestPathTraversalProtection:
         with pytest.raises(RuntimeError, match="outside.*repo"):
             _execute_git_playbook(source_config, {}, "localhost,")
 
+    @patch("ansible_runner_service.worker.validate_repo_url")
+    @patch("ansible_runner_service.worker.load_providers")
+    @patch("ansible_runner_service.worker.clone_repo")
+    def test_dotdot_traversal_blocked(
+        self,
+        mock_clone,
+        mock_load_providers,
+        mock_validate,
+        tmp_path,
+    ):
+        """Path with '..' segments escaping repo_dir must be rejected."""
+        mock_validate.return_value = MagicMock()
+
+        def fake_clone(repo_url, branch, target_dir, provider):
+            os.makedirs(os.path.join(target_dir, "deploy"))
+            # Create a file outside repo_dir that the traversal would reach
+            (tmp_path / "etc_shadow").write_text("---")
+
+        mock_clone.side_effect = fake_clone
+
+        source_config = {
+            "type": "playbook",
+            "repo": "https://dev.azure.com/xxxit/p/_git/r",
+            "branch": "main",
+            "path": "deploy/../../etc_shadow",
+        }
+
+        from ansible_runner_service.worker import _execute_git_playbook
+        with pytest.raises(RuntimeError, match="outside.*repo"):
+            _execute_git_playbook(source_config, {}, "localhost,")
+
 
 class TestExecuteJobWithGitSource:
     @patch("ansible_runner_service.worker.JobStore")
