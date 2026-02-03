@@ -98,14 +98,14 @@ def _execute_git_role(source_config: RoleSourceConfig, extra_vars, inventory):
         collections_dir = os.path.join(tmpdir, "collections")
         os.makedirs(collections_dir)
 
-        install_collection(
+        collection_info = install_collection(
             repo_url=source_config["repo"],
             branch=source_config.get("branch", "main"),
             collections_dir=collections_dir,
             provider=provider,
         )
 
-        fqcn = resolve_fqcn(source_config["role"], collections_dir)
+        fqcn = resolve_fqcn(source_config["role"], collections_dir, collection_info)
         role_vars = source_config.get("role_vars", {})
 
         wrapper_content = generate_role_wrapper_playbook(fqcn=fqcn, role_vars=role_vars)

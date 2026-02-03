@@ -1,5 +1,6 @@
 # src/ansible_runner_service/git_service.py
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -102,15 +103,33 @@ def clone_repo(
             raise RuntimeError("Git clone timed out after 120 seconds") from None
 
 
+def _parse_primary_collection(stdout: str) -> tuple[str, str] | None:
+    """Extract the primary (first installed) collection from ansible-galaxy output.
+
+    ansible-galaxy prints lines like:
+        Installing 'mycompany.infra:1.0.0' to '/path/to/...'
+    The first such line is the primary collection; subsequent ones are dependencies.
+
+    Returns (namespace, name) or None if the output couldn't be parsed.
+    """
+    match = re.search(r"Installing '(\w+)\.(\w+):", stdout)
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
 def install_collection(
     repo_url: str,
     branch: str,
     collections_dir: str,
     provider: GitProvider,
-) -> None:
+) -> tuple[str, str] | None:
     """Install an Ansible collection from a Git repo using ansible-galaxy.
 
     Credential is passed via GIT_ASKPASS, never in command-line arguments.
+
+    Returns (namespace, name) of the primary installed collection parsed from
+    ansible-galaxy output, or None if the output couldn't be parsed.
     """
     credential = provider.get_credential()
     clone_url = _build_username_url(repo_url, provider)
@@ -129,7 +148,7 @@ def install_collection(
         env = _subprocess_env(askpass_path, credential)
 
         try:
-            subprocess.run(
+            result = subprocess.run(
                 cmd,
                 check=True,
                 capture_output=True,
@@ -143,17 +162,35 @@ def install_collection(
         except subprocess.TimeoutExpired:
             raise RuntimeError("Collection install timed out after 120 seconds") from None
 
+    return _parse_primary_collection(result.stdout)
 
-def resolve_fqcn(role: str, collections_dir: str) -> str:
+
+def resolve_fqcn(
+    role: str,
+    collections_dir: str,
+    collection_info: tuple[str, str] | None = None,
+) -> str:
     """Resolve role name to fully qualified collection name.
 
     If role contains dots (e.g., 'mycompany.infra.nginx'), return as-is.
-    Otherwise, read galaxy.yml from the installed collection to derive FQCN.
+    Otherwise, use collection_info (namespace, name) from ansible-galaxy output
+    if available, or fall back to reading galaxy.yml from the installed collection.
+
+    Args:
+        role: Role name (short or fully qualified).
+        collections_dir: Path where collections are installed.
+        collection_info: Optional (namespace, name) tuple identifying the
+            primary collection, as parsed from ansible-galaxy install output.
     """
     if role.count(".") >= 2:
         return role
 
-    # Find galaxy.yml in installed collections
+    # Fast path: use collection_info from ansible-galaxy output
+    if collection_info is not None:
+        namespace, name = collection_info
+        return f"{namespace}.{name}.{role}"
+
+    # Fallback: find galaxy.yml in installed collections
     pattern = f"{collections_dir}/ansible_collections/*/*/galaxy.yml"
     galaxy_files = glob(pattern)
 
@@ -161,6 +198,13 @@ def resolve_fqcn(role: str, collections_dir: str) -> str:
         raise RuntimeError(
             f"No galaxy.yml found in {collections_dir}. "
             "Ensure the repo is a valid Ansible collection."
+        )
+
+    if len(galaxy_files) > 1:
+        raise RuntimeError(
+            f"Multiple collections found in {collections_dir} and no "
+            "collection_info provided. Pass the role as a fully qualified "
+            "name (namespace.collection.role) to avoid ambiguity."
         )
 
     with open(galaxy_files[0]) as f:

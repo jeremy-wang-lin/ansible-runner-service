@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 from ansible_runner_service.git_config import GitProvider
 from ansible_runner_service.git_service import (
     _build_username_url,
+    _parse_primary_collection,
     clone_repo,
     install_collection,
     resolve_fqcn,
@@ -184,10 +185,39 @@ class TestCloneRepo:
                 )
 
 
+class TestParsePrimaryCollection:
+    def test_parses_standard_output(self):
+        stdout = (
+            "Starting galaxy collection install process\n"
+            "Process install dependency map\n"
+            "Starting collection install process\n"
+            "Installing 'mycompany.infra:1.0.0' to '/tmp/collections/ansible_collections/mycompany/infra'\n"
+            "mycompany.infra (1.0.0) was installed successfully\n"
+        )
+        assert _parse_primary_collection(stdout) == ("mycompany", "infra")
+
+    def test_parses_first_collection_with_dependencies(self):
+        stdout = (
+            "Installing 'mycompany.infra:1.0.0' to '/tmp/collections/...'\n"
+            "Installing 'ansible.utils:3.0.0' to '/tmp/collections/...'\n"
+            "mycompany.infra (1.0.0) was installed successfully\n"
+            "ansible.utils (3.0.0) was installed successfully\n"
+        )
+        assert _parse_primary_collection(stdout) == ("mycompany", "infra")
+
+    def test_returns_none_for_unparseable_output(self):
+        assert _parse_primary_collection("") is None
+        assert _parse_primary_collection("some random output") is None
+
+    def test_parses_wildcard_version(self):
+        stdout = "Installing 'mycompany.infra:*' to '/tmp/collections/...'\n"
+        assert _parse_primary_collection(stdout) == ("mycompany", "infra")
+
+
 class TestInstallCollection:
     @patch("ansible_runner_service.git_service.subprocess.run")
     def test_install_calls_ansible_galaxy(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
         provider = GitProvider(
             type="gitlab",
             host="gitlab.company.com",
@@ -219,9 +249,57 @@ class TestInstallCollection:
         assert "/tmp/collections" in args
 
     @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_install_returns_parsed_collection_info(self, mock_run):
+        """install_collection should return (namespace, name) from stdout."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "Installing 'mycompany.infra:1.0.0' to '/tmp/collections/...'\n"
+                "mycompany.infra (1.0.0) was installed successfully\n"
+            ),
+        )
+        provider = GitProvider(
+            type="gitlab",
+            host="gitlab.company.com",
+            orgs=["platform-team"],
+            credential_env="GITLAB_TOKEN",
+        )
+
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "token"}):
+            result = install_collection(
+                repo_url="https://gitlab.company.com/platform-team/col.git",
+                branch="main",
+                collections_dir="/tmp/collections",
+                provider=provider,
+            )
+
+        assert result == ("mycompany", "infra")
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
+    def test_install_returns_none_when_stdout_unparseable(self, mock_run):
+        """If ansible-galaxy output can't be parsed, return None."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="unexpected output\n")
+        provider = GitProvider(
+            type="gitlab",
+            host="gitlab.company.com",
+            orgs=["platform-team"],
+            credential_env="GITLAB_TOKEN",
+        )
+
+        with patch.dict(os.environ, {"GITLAB_TOKEN": "token"}):
+            result = install_collection(
+                repo_url="https://gitlab.company.com/platform-team/col.git",
+                branch="main",
+                collections_dir="/tmp/collections",
+                provider=provider,
+            )
+
+        assert result is None
+
+    @patch("ansible_runner_service.git_service.subprocess.run")
     def test_install_passes_credential_via_env(self, mock_run):
         """Credential must be passed via GIT_ASKPASS, not command line."""
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
         provider = GitProvider(
             type="gitlab",
             host="gitlab.company.com",
@@ -316,6 +394,46 @@ class TestResolveFqcn:
         """If no galaxy.yml found, raise error."""
         with pytest.raises(RuntimeError, match="No galaxy.yml found"):
             resolve_fqcn("nginx", str(tmp_path))
+
+    def test_collection_info_used_when_provided(self):
+        """collection_info should be used directly, skipping galaxy.yml lookup."""
+        result = resolve_fqcn("nginx", "/nonexistent", collection_info=("mycompany", "infra"))
+        assert result == "mycompany.infra.nginx"
+
+    def test_collection_info_ignored_for_fqcn(self):
+        """If role is already a FQCN, collection_info is irrelevant."""
+        result = resolve_fqcn(
+            "mycompany.infra.nginx", "/tmp", collection_info=("other", "col"),
+        )
+        assert result == "mycompany.infra.nginx"
+
+    def test_multiple_collections_without_info_raises(self, tmp_path):
+        """Multiple galaxy.yml without collection_info should raise."""
+        # Primary collection
+        col1 = tmp_path / "ansible_collections" / "mycompany" / "infra"
+        col1.mkdir(parents=True)
+        (col1 / "galaxy.yml").write_text("namespace: mycompany\nname: infra\n")
+        # Dependency collection
+        col2 = tmp_path / "ansible_collections" / "ansible" / "utils"
+        col2.mkdir(parents=True)
+        (col2 / "galaxy.yml").write_text("namespace: ansible\nname: utils\n")
+
+        with pytest.raises(RuntimeError, match="Multiple collections found"):
+            resolve_fqcn("nginx", str(tmp_path))
+
+    def test_multiple_collections_with_info_resolves(self, tmp_path):
+        """collection_info disambiguates when multiple collections exist."""
+        # Primary collection
+        col1 = tmp_path / "ansible_collections" / "mycompany" / "infra"
+        col1.mkdir(parents=True)
+        (col1 / "galaxy.yml").write_text("namespace: mycompany\nname: infra\n")
+        # Dependency collection
+        col2 = tmp_path / "ansible_collections" / "ansible" / "utils"
+        col2.mkdir(parents=True)
+        (col2 / "galaxy.yml").write_text("namespace: ansible\nname: utils\n")
+
+        result = resolve_fqcn("nginx", str(tmp_path), collection_info=("mycompany", "infra"))
+        assert result == "mycompany.infra.nginx"
 
 
 class TestGenerateRoleWrapperPlaybook:
