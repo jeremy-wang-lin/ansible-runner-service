@@ -208,6 +208,219 @@ class TestRedisTTLFallback:
         assert "Hello, World!" in data["result"]["stdout"]
 
 
+class TestGitPlaybookFlow:
+    """Integration test for the git clone → run playbook flow.
+
+    Uses a local bare git repo to exercise real git operations and
+    ansible-runner execution without network access or credentials.
+    """
+
+    @pytest.fixture
+    def local_git_repo(self, tmp_path):
+        """Create a local bare git repo with a playbook."""
+        import subprocess
+
+        # Create a working repo, add a playbook, then create a bare clone
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        playbook_dir = work_dir / "deploy"
+        playbook_dir.mkdir()
+        (playbook_dir / "app.yml").write_text(
+            "---\n"
+            "- name: Deploy\n"
+            "  hosts: localhost\n"
+            "  connection: local\n"
+            "  gather_facts: false\n"
+            "  tasks:\n"
+            "    - name: Report\n"
+            "      ansible.builtin.debug:\n"
+            '        msg: "Deployed {{ app_name | default(\'myapp\') }}"\n'
+        )
+
+        subprocess.run(["git", "init"], cwd=work_dir, capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], cwd=work_dir, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=work_dir,
+            capture_output=True,
+            check=True,
+            env={**__import__("os").environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+        )
+
+        bare_dir = tmp_path / "repo.git"
+        subprocess.run(
+            ["git", "clone", "--bare", str(work_dir), str(bare_dir)],
+            capture_output=True,
+            check=True,
+        )
+        return bare_dir
+
+    def test_clone_and_run_playbook(self, local_git_repo, tmp_path):
+        """Real git clone → path validation → ansible-runner execution."""
+        import subprocess
+        from unittest.mock import patch, MagicMock
+        from ansible_runner_service.worker import _execute_git_playbook
+
+        mock_provider = MagicMock()
+        mock_provider.get_credential.return_value = "unused"
+        mock_provider.type = "azure"
+
+        # Patch clone_repo to do a real unauthenticated git clone
+        def real_clone(repo_url, branch, target_dir, provider):
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch,
+                 "--single-branch", str(local_git_repo), target_dir],
+                check=True, capture_output=True, text=True,
+            )
+
+        source_config = {
+            "type": "playbook",
+            "repo": "https://fake.example.com/org/repo",
+            "branch": "main",
+            "path": "deploy/app.yml",
+        }
+
+        with patch("ansible_runner_service.worker.load_providers"):
+            with patch("ansible_runner_service.worker.validate_repo_url", return_value=mock_provider):
+                with patch("ansible_runner_service.worker.clone_repo", side_effect=real_clone):
+                    result = _execute_git_playbook(source_config, {"app_name": "testapp"}, "localhost,")
+
+        assert result.rc == 0
+        assert "Deployed testapp" in result.stdout
+
+    def test_clone_with_symlink_escape_blocked(self, tmp_path):
+        """Symlink escape in cloned repo is caught before execution."""
+        import subprocess
+        from unittest.mock import patch, MagicMock
+        from ansible_runner_service.worker import _execute_git_playbook
+
+        mock_provider = MagicMock()
+        mock_provider.get_credential.return_value = "unused"
+        mock_provider.type = "azure"
+
+        # Create escape target
+        secret_dir = tmp_path / "secret"
+        secret_dir.mkdir()
+        (secret_dir / "evil.yml").write_text("---\n- name: Evil\n  hosts: localhost\n  tasks: []\n")
+
+        def clone_with_symlink(repo_url, branch, target_dir, provider):
+            import os
+            os.makedirs(target_dir)
+            os.symlink(str(secret_dir), os.path.join(target_dir, "escape"))
+
+        source_config = {
+            "type": "playbook",
+            "repo": "https://fake.example.com/org/repo",
+            "branch": "main",
+            "path": "escape/evil.yml",
+        }
+
+        with patch("ansible_runner_service.worker.load_providers"):
+            with patch("ansible_runner_service.worker.validate_repo_url", return_value=mock_provider):
+                with patch("ansible_runner_service.worker.clone_repo", side_effect=clone_with_symlink):
+                    with pytest.raises(RuntimeError, match="outside.*repo"):
+                        _execute_git_playbook(source_config, {}, "localhost,")
+
+
+class TestGitRoleFlow:
+    """Integration test for the git collection install → role execution flow.
+
+    Uses a local bare git repo containing a valid Ansible collection structure
+    to exercise real ansible-galaxy install, FQCN resolution, wrapper playbook
+    generation, and ansible-runner execution.
+    """
+
+    @pytest.fixture
+    def local_collection_repo(self, tmp_path):
+        """Create a local bare git repo with a valid Ansible collection."""
+        import subprocess
+
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        # galaxy.yml at repo root (authors and readme are mandatory)
+        (work_dir / "galaxy.yml").write_text(
+            "---\n"
+            "namespace: testns\n"
+            "name: testcol\n"
+            "version: 1.0.0\n"
+            "authors:\n"
+            "  - test\n"
+            "readme: README.md\n"
+        )
+        (work_dir / "README.md").write_text("Test collection\n")
+
+        # Role with a simple task
+        role_tasks = work_dir / "roles" / "greet" / "tasks"
+        role_tasks.mkdir(parents=True)
+        (role_tasks / "main.yml").write_text(
+            "---\n"
+            "- name: Greet\n"
+            "  ansible.builtin.debug:\n"
+            '    msg: "Hello from role, {{ greeting | default(\'world\') }}"\n'
+        )
+
+        git_env = {
+            **__import__("os").environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        subprocess.run(["git", "init"], cwd=work_dir, capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], cwd=work_dir, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=work_dir, capture_output=True, check=True, env=git_env,
+        )
+
+        bare_dir = tmp_path / "collection.git"
+        subprocess.run(
+            ["git", "clone", "--bare", str(work_dir), str(bare_dir)],
+            capture_output=True, check=True,
+        )
+        return bare_dir
+
+    def test_install_collection_and_run_role(self, local_collection_repo, tmp_path):
+        """Real ansible-galaxy install → resolve_fqcn → wrapper → ansible-runner."""
+        import subprocess
+        from unittest.mock import patch, MagicMock
+        from ansible_runner_service.worker import _execute_git_role
+        from ansible_runner_service.git_service import _parse_primary_collection
+
+        mock_provider = MagicMock()
+        mock_provider.get_credential.return_value = "unused"
+        mock_provider.type = "azure"
+
+        # Patch install_collection to do a real unauthenticated ansible-galaxy install
+        def real_install(repo_url, branch, collections_dir, provider):
+            source = f"git+file://{local_collection_repo},{branch}"
+            result = subprocess.run(
+                ["ansible-galaxy", "collection", "install", source, "-p", collections_dir],
+                check=True, capture_output=True, text=True,
+            )
+            return _parse_primary_collection(result.stdout)
+
+        source_config = {
+            "type": "role",
+            "repo": "https://fake.example.com/org/collection",
+            "branch": "main",
+            "role": "greet",
+            "role_vars": {"greeting": "integration-test"},
+        }
+
+        extra_vars = {"ansible_connection": "local", "gather_facts": False}
+
+        with patch("ansible_runner_service.worker.load_providers"):
+            with patch("ansible_runner_service.worker.validate_repo_url", return_value=mock_provider):
+                with patch("ansible_runner_service.worker.install_collection", side_effect=real_install):
+                    result = _execute_git_role(source_config, extra_vars, "localhost,")
+
+        assert result.rc == 0
+        assert "Hello from role, integration-test" in result.stdout
+
+
 @pytest.mark.e2e
 class TestE2EWithWorker:
     """End-to-end tests requiring a running rq worker.

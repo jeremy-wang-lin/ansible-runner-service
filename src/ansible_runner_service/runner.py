@@ -18,19 +18,27 @@ def run_playbook(
     playbook: str,
     extra_vars: dict,
     inventory: str,
-    playbooks_dir: Path,
+    playbooks_dir: Path | None = None,
+    envvars: dict | None = None,
 ) -> RunResult:
     """Run an Ansible playbook synchronously and return results."""
-    playbook_path = playbooks_dir / playbook
+    if playbooks_dir:
+        playbook_path = str(playbooks_dir / playbook)
+    else:
+        playbook_path = playbook
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        runner = ansible_runner.run(
+        run_kwargs = dict(
             private_data_dir=tmpdir,
-            playbook=str(playbook_path),
+            playbook=playbook_path,
             inventory=inventory,
             extravars=extra_vars,
             quiet=False,
         )
+        if envvars:
+            run_kwargs["envvars"] = envvars
+
+        runner = ansible_runner.run(**run_kwargs)
 
         stdout = runner.stdout.read() if runner.stdout else ""
 

@@ -433,3 +433,195 @@ class TestSubmitJobWithDB:
 
         assert response.status_code == 202
         mock_store.create_job.assert_called_once()
+
+
+class TestSubmitGitSource:
+    async def test_submit_git_playbook(self, playbooks_dir: Path):
+        """Submit job with Git playbook source."""
+        from ansible_runner_service.job_store import Job, JobStatus
+        from ansible_runner_service.git_config import GitProvider
+
+        mock_store = MagicMock()
+        mock_store.create_job.return_value = Job(
+            job_id="git-test-123",
+            status=JobStatus.PENDING,
+            playbook="deploy/app.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="playbook",
+            source_repo="https://dev.azure.com/xxxit/p/_git/r",
+            source_branch="main",
+        )
+
+        mock_redis_inst = MagicMock()
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.enqueue_job") as mock_enqueue, \
+                     patch("ansible_runner_service.main.load_providers") as mock_providers, \
+                     patch("ansible_runner_service.main.validate_repo_url") as mock_validate:
+                    mock_providers.return_value = [
+                        GitProvider(type="azure", host="dev.azure.com", orgs=["xxxit"], credential_env="AZURE_PAT"),
+                    ]
+                    mock_validate.return_value = mock_providers.return_value[0]
+
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={
+                            "source": {
+                                "type": "playbook",
+                                "repo": "https://dev.azure.com/xxxit/p/_git/r",
+                                "path": "deploy/app.yml",
+                            },
+                            "inventory": "localhost,",
+                        },
+                    )
+
+            assert response.status_code == 202
+            data = response.json()
+            assert data["job_id"] == "git-test-123"
+
+            # Verify enqueue was called with source_config
+            mock_enqueue.assert_called_once()
+            enqueue_kwargs = mock_enqueue.call_args[1]
+            assert enqueue_kwargs["source_config"]["type"] == "playbook"
+            assert enqueue_kwargs["source_config"]["repo"] == "https://dev.azure.com/xxxit/p/_git/r"
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_submit_git_playbook_rejected_org(self, playbooks_dir: Path):
+        """Reject repo from disallowed organization."""
+        mock_store = MagicMock()
+        mock_redis_inst = MagicMock()
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.load_providers") as mock_providers, \
+                     patch("ansible_runner_service.main.validate_repo_url") as mock_validate:
+                    mock_providers.return_value = []
+                    mock_validate.side_effect = ValueError("Repository not allowed: host 'github.com' is not configured")
+
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={
+                            "source": {
+                                "type": "playbook",
+                                "repo": "https://github.com/evil/repo.git",
+                                "path": "deploy.yml",
+                            },
+                        },
+                    )
+
+            assert response.status_code == 400
+            assert "not configured" in response.json()["detail"]
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_submit_git_role(self, playbooks_dir: Path):
+        """Submit job with Git role source."""
+        from ansible_runner_service.job_store import Job, JobStatus
+        from ansible_runner_service.git_config import GitProvider
+
+        mock_store = MagicMock()
+        mock_store.create_job.return_value = Job(
+            job_id="role-test-123",
+            status=JobStatus.PENDING,
+            playbook="nginx",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="role",
+            source_repo="https://gitlab.company.com/team/col.git",
+            source_branch="main",
+        )
+
+        mock_redis_inst = MagicMock()
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.enqueue_job") as mock_enqueue, \
+                     patch("ansible_runner_service.main.load_providers") as mock_providers, \
+                     patch("ansible_runner_service.main.validate_repo_url") as mock_validate:
+                    mock_providers.return_value = [
+                        GitProvider(type="gitlab", host="gitlab.company.com", orgs=["team"], credential_env="GL_TOKEN"),
+                    ]
+                    mock_validate.return_value = mock_providers.return_value[0]
+
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={
+                            "source": {
+                                "type": "role",
+                                "repo": "https://gitlab.company.com/team/col.git",
+                                "role": "nginx",
+                                "role_vars": {"port": 80},
+                            },
+                        },
+                    )
+
+            assert response.status_code == 202
+            data = response.json()
+            assert data["job_id"] == "role-test-123"
+
+            enqueue_kwargs = mock_enqueue.call_args[1]
+            assert enqueue_kwargs["source_config"]["type"] == "role"
+            assert enqueue_kwargs["source_config"]["role"] == "nginx"
+            assert enqueue_kwargs["source_config"]["role_vars"] == {"port": 80}
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_legacy_local_playbook_still_works(self, client: AsyncClient):
+        """Existing format still accepted."""
+        response = await client.post(
+            "/api/v1/jobs?sync=true",
+            json={"playbook": "hello.yml"},
+        )
+        assert response.status_code == 200
+
+    async def test_git_source_sync_rejected(self, playbooks_dir: Path):
+        """Sync mode not supported for Git sources."""
+        mock_store = MagicMock()
+        mock_redis_inst = MagicMock()
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.load_providers") as mock_providers, \
+                     patch("ansible_runner_service.main.validate_repo_url") as mock_validate:
+                    from ansible_runner_service.git_config import GitProvider
+                    mock_providers.return_value = [
+                        GitProvider(type="azure", host="dev.azure.com", orgs=["xxxit"], credential_env="AZURE_PAT"),
+                    ]
+                    mock_validate.return_value = mock_providers.return_value[0]
+
+                    response = await client.post(
+                        "/api/v1/jobs?sync=true",
+                        json={
+                            "source": {
+                                "type": "playbook",
+                                "repo": "https://dev.azure.com/xxxit/p/_git/r",
+                                "path": "deploy.yml",
+                            },
+                        },
+                    )
+
+            assert response.status_code == 400
+            assert "sync" in response.json()["detail"].lower()
+        finally:
+            app.dependency_overrides.clear()

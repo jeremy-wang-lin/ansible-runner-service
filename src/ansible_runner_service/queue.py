@@ -4,6 +4,8 @@ from typing import Any
 from redis import Redis
 from rq import Queue
 
+from ansible_runner_service.schemas import SourceConfig
+
 
 def get_queue(redis: Redis) -> Queue:
     return Queue(connection=redis)
@@ -14,6 +16,7 @@ def enqueue_job(
     playbook: str,
     extra_vars: dict[str, Any],
     inventory: str,
+    source_config: SourceConfig | None = None,
     redis: Redis | None = None,
 ) -> None:
     """Enqueue a job for async execution."""
@@ -29,5 +32,6 @@ def enqueue_job(
             "playbook": playbook,
             "extra_vars": extra_vars,
             "inventory": inventory,
+            "source_config": source_config,
         },
     )

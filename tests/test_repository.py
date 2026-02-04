@@ -147,3 +147,43 @@ class TestJobRepository:
 
         # Verify filter was called with status condition
         mock_query.filter.assert_called_once()
+
+    def test_create_job_with_source_fields(self):
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+
+        job = repo.create(
+            job_id="test-source-123",
+            playbook="deploy/app.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="playbook",
+            source_repo="https://dev.azure.com/xxxit/p/_git/r",
+            source_branch="v2.0.0",
+        )
+
+        added_job = mock_session.add.call_args[0][0]
+        assert added_job.source_type == "playbook"
+        assert added_job.source_repo == "https://dev.azure.com/xxxit/p/_git/r"
+        assert added_job.source_branch == "v2.0.0"
+
+    def test_create_job_default_source_type(self):
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+
+        job = repo.create(
+            job_id="test-local-123",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        added_job = mock_session.add.call_args[0][0]
+        assert added_job.source_type == "local"
+        assert added_job.source_repo is None

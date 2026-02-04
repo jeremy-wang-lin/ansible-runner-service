@@ -31,3 +31,36 @@ class TestJobModel:
         from ansible_runner_service.models import JobModel
 
         assert JobModel.__tablename__ == "jobs"
+
+
+class TestJobModelSourceFields:
+    def test_source_fields_exist(self):
+        from ansible_runner_service.models import JobModel
+
+        job = JobModel(
+            id="test-123",
+            status="pending",
+            playbook="hello.yml",
+            inventory="localhost,",
+            created_at=datetime.now(timezone.utc),
+            source_type="playbook",
+            source_repo="https://dev.azure.com/xxxit/p/_git/r",
+            source_branch="main",
+        )
+        assert job.source_type == "playbook"
+        assert job.source_repo == "https://dev.azure.com/xxxit/p/_git/r"
+        assert job.source_branch == "main"
+
+    def test_source_fields_default(self):
+        from ansible_runner_service.models import JobModel
+
+        job = JobModel(
+            id="test-456",
+            status="pending",
+            playbook="hello.yml",
+            inventory="localhost,",
+            created_at=datetime.now(timezone.utc),
+        )
+        assert job.source_type == "local"
+        assert job.source_repo is None
+        assert job.source_branch is None

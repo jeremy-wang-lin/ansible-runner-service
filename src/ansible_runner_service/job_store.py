@@ -38,6 +38,9 @@ class Job:
     finished_at: datetime | None = None
     result: JobResult | None = None
     error: str | None = None
+    source_type: str = "local"
+    source_repo: str | None = None
+    source_branch: str | None = None
 
 
 class JobStore:
@@ -59,6 +62,9 @@ class JobStore:
         playbook: str,
         extra_vars: dict[str, Any],
         inventory: str,
+        source_type: str = "local",
+        source_repo: str | None = None,
+        source_branch: str | None = None,
     ) -> Job:
         job = Job(
             job_id=str(uuid.uuid4()),
@@ -67,6 +73,9 @@ class JobStore:
             extra_vars=extra_vars,
             inventory=inventory,
             created_at=datetime.now(timezone.utc),
+            source_type=source_type,
+            source_repo=source_repo,
+            source_branch=source_branch,
         )
         self._save_job(job)
 
@@ -79,6 +88,9 @@ class JobStore:
                     extra_vars=extra_vars,
                     inventory=inventory,
                     created_at=job.created_at,
+                    source_type=source_type,
+                    source_repo=source_repo,
+                    source_branch=source_branch,
                 )
             except Exception:
                 # Rollback Redis on DB failure for strict consistency
@@ -139,6 +151,9 @@ class JobStore:
             "finished_at": job.finished_at.isoformat() if job.finished_at else "",
             "result": json.dumps(asdict(job.result)) if job.result else "",
             "error": job.error or "",
+            "source_type": job.source_type,
+            "source_repo": job.source_repo or "",
+            "source_branch": job.source_branch or "",
         }
         self.redis.hset(self._job_key(job.job_id), mapping=data)
         self.redis.expire(self._job_key(job.job_id), self.ttl)
@@ -167,4 +182,7 @@ class JobStore:
             finished_at=datetime.fromisoformat(finished_str) if finished_str else None,
             result=result,
             error=get_str("error") or None,
+            source_type=get_str("source_type") or "local",
+            source_repo=get_str("source_repo") or None,
+            source_branch=get_str("source_branch") or None,
         )
