@@ -10,6 +10,8 @@ from ansible_runner_service.schemas import (
     JobResultSchema,
     GitPlaybookSource,
     GitRoleSource,
+    InlineInventory,
+    GitInventory,
 )
 
 
@@ -229,4 +231,49 @@ class TestJobRequestBackwardCompatibility:
                     "repo": "https://dev.azure.com/xxxit/p/_git/r",
                     "path": "deploy.yml",
                 },
+            )
+
+
+class TestInlineInventory:
+    def test_valid_inline(self):
+        inv = InlineInventory(
+            type="inline",
+            data={
+                "webservers": {
+                    "hosts": {"10.0.1.10": {"http_port": "8080"}, "10.0.1.11": None}
+                }
+            },
+        )
+        assert inv.type == "inline"
+        assert "webservers" in inv.data
+
+    def test_inline_requires_data(self):
+        with pytest.raises(ValidationError):
+            InlineInventory(type="inline")
+
+
+class TestGitInventory:
+    def test_valid_git_inventory(self):
+        inv = GitInventory(
+            type="git",
+            repo="https://dev.azure.com/org/project/_git/inventory",
+            path="production/hosts.yml",
+        )
+        assert inv.type == "git"
+        assert inv.branch == "main"
+
+    def test_git_inventory_path_traversal_rejected(self):
+        with pytest.raises(ValueError):
+            GitInventory(
+                type="git",
+                repo="https://dev.azure.com/org/project/_git/inventory",
+                path="../../../etc/passwd",
+            )
+
+    def test_git_inventory_absolute_path_rejected(self):
+        with pytest.raises(ValueError):
+            GitInventory(
+                type="git",
+                repo="https://dev.azure.com/org/project/_git/inventory",
+                path="/etc/hosts",
             )

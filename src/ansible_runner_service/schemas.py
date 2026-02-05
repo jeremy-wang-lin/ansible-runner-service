@@ -22,6 +22,46 @@ class RoleSourceConfig(TypedDict):
 SourceConfig = PlaybookSourceConfig | RoleSourceConfig
 
 
+class InlineInventoryConfig(TypedDict):
+    type: Literal["inline"]
+    data: dict[str, Any]
+
+
+class GitInventoryConfig(TypedDict):
+    type: Literal["git"]
+    repo: str
+    branch: str
+    path: str
+
+
+InventoryConfig = InlineInventoryConfig | GitInventoryConfig
+
+
+class InlineInventory(BaseModel):
+    type: Literal["inline"]
+    data: dict[str, Any]
+
+
+class GitInventory(BaseModel):
+    type: Literal["git"]
+    repo: str
+    branch: str = "main"
+    path: str
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, v: str) -> str:
+        if ".." in v or v.startswith("/"):
+            raise ValueError("Path traversal not allowed")
+        return v
+
+
+StructuredInventory = Annotated[
+    Union[InlineInventory, GitInventory],
+    Field(discriminator="type"),
+]
+
+
 class GitPlaybookSource(BaseModel):
     type: Literal["playbook"]
     repo: str
