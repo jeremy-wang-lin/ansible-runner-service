@@ -12,6 +12,7 @@ from ansible_runner_service.schemas import (
     GitRoleSource,
     InlineInventory,
     GitInventory,
+    ExecutionOptions,
 )
 
 
@@ -277,3 +278,36 @@ class TestGitInventory:
                 repo="https://dev.azure.com/org/project/_git/inventory",
                 path="/etc/hosts",
             )
+
+
+class TestExecutionOptions:
+    def test_defaults(self):
+        opts = ExecutionOptions()
+        assert opts.check is False
+        assert opts.diff is False
+        assert opts.tags == []
+        assert opts.skip_tags == []
+        assert opts.limit is None
+        assert opts.verbosity == 0
+        assert opts.vault_password_file is None
+
+    def test_all_options(self):
+        opts = ExecutionOptions(
+            check=True,
+            diff=True,
+            tags=["deploy", "config"],
+            skip_tags=["debug"],
+            limit="webservers",
+            verbosity=3,
+        )
+        assert opts.check is True
+        assert opts.tags == ["deploy", "config"]
+        assert opts.verbosity == 3
+
+    def test_verbosity_range(self):
+        with pytest.raises(ValidationError):
+            ExecutionOptions(verbosity=5)
+
+    def test_verbosity_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            ExecutionOptions(verbosity=-1)

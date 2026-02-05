@@ -37,6 +37,16 @@ class GitInventoryConfig(TypedDict):
 InventoryConfig = InlineInventoryConfig | GitInventoryConfig
 
 
+class ExecutionOptionsConfig(TypedDict, total=False):
+    check: bool
+    diff: bool
+    tags: list[str]
+    skip_tags: list[str]
+    limit: str
+    verbosity: int
+    vault_password_file: str
+
+
 class InlineInventory(BaseModel):
     type: Literal["inline"]
     data: dict[str, Any]
@@ -60,6 +70,16 @@ StructuredInventory = Annotated[
     Union[InlineInventory, GitInventory],
     Field(discriminator="type"),
 ]
+
+
+class ExecutionOptions(BaseModel):
+    check: bool = False
+    diff: bool = False
+    tags: list[str] = Field(default_factory=list)
+    skip_tags: list[str] = Field(default_factory=list)
+    limit: str | None = None
+    verbosity: int = Field(default=0, ge=0, le=4)
+    vault_password_file: str | None = None
 
 
 class GitPlaybookSource(BaseModel):
