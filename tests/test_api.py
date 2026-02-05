@@ -769,6 +769,29 @@ class TestSubmitWithInventoryAndOptions:
         finally:
             app.dependency_overrides.clear()
 
+    async def test_sync_with_structured_inventory_rejected(self, playbooks_dir: Path):
+        """Sync mode rejects structured inventory with 400."""
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/jobs?sync=true",
+                    json={
+                        "playbook": "test.yml",
+                        "inventory": {
+                            "type": "inline",
+                            "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+                        },
+                    },
+                )
+
+            assert response.status_code == 400
+        finally:
+            app.dependency_overrides.clear()
+
     async def test_invalid_inventory_type_rejected(self, playbooks_dir: Path):
         """Invalid inventory type should be rejected by Pydantic validation."""
         (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")

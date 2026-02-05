@@ -94,6 +94,7 @@ class JobStore:
                     source_type=source_type,
                     source_repo=source_repo,
                     source_branch=source_branch,
+                    options=options,
                 )
             except Exception:
                 # Rollback Redis on DB failure for strict consistency

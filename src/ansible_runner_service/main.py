@@ -153,14 +153,17 @@ def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
     options = request.options.model_dump(exclude_defaults=True) or None
 
     if sync:
-        # Sync mode only supports string inventory (existing behavior).
-        # Structured inventory with sync is not yet supported.
-        sync_inventory = request.inventory if isinstance(request.inventory, str) else "localhost,"
+        if not isinstance(request.inventory, str):
+            raise HTTPException(
+                status_code=400,
+                detail="Sync mode does not support structured inventory. Use async mode.",
+            )
         result = run_playbook(
             playbook=request.playbook,
             extra_vars=request.extra_vars,
-            inventory=sync_inventory,
+            inventory=request.inventory,
             playbooks_dir=playbooks_dir,
+            options=options,
         )
         return JSONResponse(
             status_code=200,

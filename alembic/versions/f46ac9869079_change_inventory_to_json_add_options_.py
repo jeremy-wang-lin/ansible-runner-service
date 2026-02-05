@@ -19,13 +19,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # First, wrap existing string values as JSON strings for MariaDB compatibility
+    op.execute('UPDATE jobs SET inventory = CONCAT(\'"\', REPLACE(inventory, \'"\', \'\\\\"\'), \'"\') WHERE inventory IS NOT NULL')
+
     op.alter_column(
         "jobs",
         "inventory",
         existing_type=sa.String(255),
         type_=sa.JSON,
         existing_nullable=False,
-        postgresql_using="inventory::json",
     )
     op.add_column("jobs", sa.Column("options", sa.JSON, nullable=True))
 
