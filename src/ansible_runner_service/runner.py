@@ -20,6 +20,7 @@ def run_playbook(
     inventory: str,
     playbooks_dir: Path | None = None,
     envvars: dict | None = None,
+    options: dict | None = None,
 ) -> RunResult:
     """Run an Ansible playbook synchronously and return results."""
     if playbooks_dir:
@@ -37,6 +38,24 @@ def run_playbook(
         )
         if envvars:
             run_kwargs["envvars"] = envvars
+
+        if options:
+            if options.get("tags"):
+                run_kwargs["tags"] = ",".join(options["tags"])
+            if options.get("skip_tags"):
+                run_kwargs["skip_tags"] = ",".join(options["skip_tags"])
+            if options.get("limit"):
+                run_kwargs["limit"] = options["limit"]
+            if options.get("verbosity"):
+                run_kwargs["verbosity"] = options["verbosity"]
+
+            cmdline_parts = []
+            if options.get("check"):
+                cmdline_parts.append("--check")
+            if options.get("diff"):
+                cmdline_parts.append("--diff")
+            if cmdline_parts:
+                run_kwargs["cmdline"] = " ".join(cmdline_parts)
 
         runner = ansible_runner.run(**run_kwargs)
 
