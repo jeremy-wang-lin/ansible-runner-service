@@ -114,7 +114,8 @@ class JobRequest(BaseModel):
     playbook: str | None = Field(default=None, min_length=1)
     source: GitSource | None = None
     extra_vars: dict[str, Any] = Field(default_factory=dict)
-    inventory: str = "localhost,"
+    inventory: str | StructuredInventory = "localhost,"
+    options: ExecutionOptions = Field(default_factory=ExecutionOptions)
 
     @model_validator(mode="after")
     def validate_playbook_or_source(self):

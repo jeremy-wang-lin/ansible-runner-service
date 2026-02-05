@@ -311,3 +311,56 @@ class TestExecutionOptions:
     def test_verbosity_negative_rejected(self):
         with pytest.raises(ValidationError):
             ExecutionOptions(verbosity=-1)
+
+
+class TestJobRequestInventoryTypes:
+    def test_string_inventory_still_works(self):
+        req = JobRequest(playbook="hello.yml", inventory="myhost,")
+        assert req.inventory == "myhost,"
+
+    def test_inline_inventory(self):
+        req = JobRequest(
+            playbook="hello.yml",
+            inventory={
+                "type": "inline",
+                "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+            },
+        )
+        assert isinstance(req.inventory, InlineInventory)
+        assert req.inventory.data["webservers"]["hosts"]["10.0.1.10"] is None
+
+    def test_git_inventory(self):
+        req = JobRequest(
+            playbook="hello.yml",
+            inventory={
+                "type": "git",
+                "repo": "https://dev.azure.com/org/project/_git/inv",
+                "path": "prod/hosts.yml",
+            },
+        )
+        assert isinstance(req.inventory, GitInventory)
+        assert req.inventory.branch == "main"
+
+    def test_invalid_inventory_type_rejected(self):
+        with pytest.raises(ValidationError):
+            JobRequest(
+                playbook="hello.yml",
+                inventory={"type": "unknown", "data": {}},
+            )
+
+    def test_default_inventory_unchanged(self):
+        req = JobRequest(playbook="hello.yml")
+        assert req.inventory == "localhost,"
+
+    def test_options_default(self):
+        req = JobRequest(playbook="hello.yml")
+        assert req.options.check is False
+        assert req.options.verbosity == 0
+
+    def test_options_provided(self):
+        req = JobRequest(
+            playbook="hello.yml",
+            options={"check": True, "tags": ["deploy"]},
+        )
+        assert req.options.check is True
+        assert req.options.tags == ["deploy"]
