@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from redis import Redis
 
 from ansible_runner_service.job_store import JobStore, JobStatus, JobResult
@@ -40,17 +42,51 @@ def get_playbooks_dir() -> Path:
     return Path(__file__).parent.parent.parent / "playbooks"
 
 
-def _execute_local(playbook, extra_vars, inventory):
+def _resolve_inventory(inventory, tmpdir):
+    """Resolve inventory to a string or file path for ansible-runner."""
+    if isinstance(inventory, str):
+        return inventory
+
+    if inventory["type"] == "inline":
+        inventory_path = os.path.join(tmpdir, "inventory.yml")
+        with open(inventory_path, "w") as f:
+            yaml.dump(inventory["data"], f, default_flow_style=False)
+        return inventory_path
+
+    if inventory["type"] == "git":
+        providers = load_providers()
+        provider = validate_repo_url(inventory["repo"], providers)
+        repo_dir = os.path.join(tmpdir, "inventory_repo")
+        clone_repo(
+            repo_url=inventory["repo"],
+            branch=inventory.get("branch", "main"),
+            target_dir=repo_dir,
+            provider=provider,
+        )
+        inv_path = os.path.join(repo_dir, inventory["path"])
+        resolved = Path(inv_path).resolve()
+        repo_root = Path(repo_dir).resolve()
+        if not resolved.is_relative_to(repo_root):
+            raise RuntimeError("Inventory path resolves outside repo directory")
+        if not resolved.exists():
+            raise RuntimeError(f"Inventory path not found: {inventory['path']}")
+        return str(resolved)
+
+    raise ValueError(f"Unknown inventory type: {inventory['type']}")
+
+
+def _execute_local(playbook, extra_vars, inventory, options=None):
     """Execute a local playbook."""
     return run_playbook(
         playbook=playbook,
         extra_vars=extra_vars,
         inventory=inventory,
         playbooks_dir=get_playbooks_dir(),
+        options=options,
     )
 
 
-def _execute_git_playbook(source_config: PlaybookSourceConfig, extra_vars, inventory):
+def _execute_git_playbook(source_config: PlaybookSourceConfig, extra_vars, inventory, options=None):
     """Clone repo and execute playbook from it.
 
     Note: provider validation here serves two purposes — security
@@ -83,10 +119,11 @@ def _execute_git_playbook(source_config: PlaybookSourceConfig, extra_vars, inven
             playbook=playbook_path,
             extra_vars=extra_vars,
             inventory=inventory,
+            options=options,
         )
 
 
-def _execute_git_role(source_config: RoleSourceConfig, extra_vars, inventory):
+def _execute_git_role(source_config: RoleSourceConfig, extra_vars, inventory, options=None):
     """Install collection and execute role.
 
     See _execute_git_playbook docstring for note on dual validation.
@@ -118,6 +155,7 @@ def _execute_git_role(source_config: RoleSourceConfig, extra_vars, inventory):
             extra_vars=extra_vars,
             inventory=inventory,
             envvars={"ANSIBLE_COLLECTIONS_PATH": collections_dir},
+            options=options,
         )
 
 
@@ -125,7 +163,8 @@ def execute_job(
     job_id: str,
     playbook: str,
     extra_vars: dict[str, Any],
-    inventory: str,
+    inventory: str | dict,
+    options: dict | None = None,
     source_config: SourceConfig | None = None,
 ) -> None:
     """Execute a job - called by rq worker."""
@@ -145,14 +184,17 @@ def execute_job(
         )
 
         try:
-            if source_config is None:
-                result = _execute_local(playbook, extra_vars, inventory)
-            elif source_config["type"] == "playbook":
-                result = _execute_git_playbook(source_config, extra_vars, inventory)
-            elif source_config["type"] == "role":
-                result = _execute_git_role(source_config, extra_vars, inventory)
-            else:
-                raise ValueError(f"Unknown source type: {source_config['type']}")
+            with tempfile.TemporaryDirectory() as inv_tmpdir:
+                resolved_inventory = _resolve_inventory(inventory, inv_tmpdir)
+
+                if source_config is None:
+                    result = _execute_local(playbook, extra_vars, resolved_inventory, options)
+                elif source_config["type"] == "playbook":
+                    result = _execute_git_playbook(source_config, extra_vars, resolved_inventory, options)
+                elif source_config["type"] == "role":
+                    result = _execute_git_role(source_config, extra_vars, resolved_inventory, options)
+                else:
+                    raise ValueError(f"Unknown source type: {source_config['type']}")
 
             job_result = JobResult(
                 rc=result.rc,

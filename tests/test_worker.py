@@ -247,7 +247,7 @@ class TestExecuteJobWithGitSource:
             source_config=source_config,
         )
 
-        mock_exec_git_playbook.assert_called_once_with(source_config, {}, "localhost,")
+        mock_exec_git_playbook.assert_called_once_with(source_config, {}, "localhost,", None)
 
         calls = mock_store.update_status.call_args_list
         assert calls[0].args[1] == JobStatus.RUNNING
@@ -290,7 +290,7 @@ class TestExecuteJobWithGitSource:
             source_config=source_config,
         )
 
-        mock_exec_git_role.assert_called_once_with(source_config, {}, "localhost,")
+        mock_exec_git_role.assert_called_once_with(source_config, {}, "localhost,", None)
         calls = mock_store.update_status.call_args_list
         assert calls[1].args[1] == JobStatus.SUCCESSFUL
 
@@ -323,4 +323,125 @@ class TestExecuteJobWithGitSource:
             inventory="localhost,",
         )
 
-        mock_exec_local.assert_called_once_with("hello.yml", {}, "localhost,")
+        mock_exec_local.assert_called_once_with("hello.yml", {}, "localhost,", None)
+
+
+class TestInlineInventory:
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
+    @patch("ansible_runner_service.worker.run_playbook")
+    @patch("ansible_runner_service.worker.get_playbooks_dir")
+    def test_inline_inventory_writes_yaml(
+        self,
+        mock_get_playbooks_dir,
+        mock_run_playbook,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
+    ):
+        """Inline inventory dict is written as YAML file."""
+        mock_store = MagicMock()
+        mock_job_store_class.return_value = mock_store
+        mock_get_playbooks_dir.return_value = "/playbooks"
+        mock_run_playbook.return_value = RunResult(
+            status="successful", rc=0, stdout="ok", stats={},
+        )
+
+        inventory = {
+            "type": "inline",
+            "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+        }
+
+        execute_job(
+            job_id="inv-test",
+            playbook="test.yml",
+            extra_vars={},
+            inventory=inventory,
+        )
+
+        call_kwargs = mock_run_playbook.call_args
+        inv_arg = call_kwargs[1].get("inventory")
+        # inventory arg should be a file path string, not the dict
+        assert isinstance(inv_arg, str)
+        assert inv_arg != str(inventory)  # Not just str(dict)
+
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
+    @patch("ansible_runner_service.worker.run_playbook")
+    @patch("ansible_runner_service.worker.get_playbooks_dir")
+    def test_string_inventory_passed_through(
+        self,
+        mock_get_playbooks_dir,
+        mock_run_playbook,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
+    ):
+        """String inventory passed directly to runner."""
+        mock_store = MagicMock()
+        mock_job_store_class.return_value = mock_store
+        mock_get_playbooks_dir.return_value = "/playbooks"
+        mock_run_playbook.return_value = RunResult(
+            status="successful", rc=0, stdout="ok", stats={},
+        )
+
+        execute_job(
+            job_id="str-test",
+            playbook="test.yml",
+            extra_vars={},
+            inventory="localhost,",
+        )
+
+        # Check run_playbook was called with string inventory
+        call_kwargs = mock_run_playbook.call_args[1]
+        assert call_kwargs["inventory"] == "localhost,"
+
+
+class TestWorkerExecutionOptions:
+    @patch("ansible_runner_service.worker.JobStore")
+    @patch("ansible_runner_service.worker.JobRepository")
+    @patch("ansible_runner_service.worker.get_session")
+    @patch("ansible_runner_service.worker.get_engine_singleton")
+    @patch("ansible_runner_service.worker.get_redis")
+    @patch("ansible_runner_service.worker.run_playbook")
+    @patch("ansible_runner_service.worker.get_playbooks_dir")
+    def test_options_passed_to_runner(
+        self,
+        mock_get_playbooks_dir,
+        mock_run_playbook,
+        mock_get_redis,
+        mock_get_engine,
+        mock_get_session,
+        mock_job_repo_class,
+        mock_job_store_class,
+    ):
+        """Options dict is forwarded to run_playbook."""
+        mock_store = MagicMock()
+        mock_job_store_class.return_value = mock_store
+        mock_get_playbooks_dir.return_value = "/playbooks"
+        mock_run_playbook.return_value = RunResult(
+            status="successful", rc=0, stdout="ok", stats={},
+        )
+
+        options = {"check": True, "tags": ["deploy"]}
+
+        execute_job(
+            job_id="opt-test",
+            playbook="test.yml",
+            extra_vars={},
+            inventory="localhost,",
+            options=options,
+        )
+
+        call_kwargs = mock_run_playbook.call_args[1]
+        assert call_kwargs["options"] == options
