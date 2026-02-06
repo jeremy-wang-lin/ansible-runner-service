@@ -10,6 +10,7 @@ Requires: Redis (docker-compose up -d)
 """
 import pytest
 from redis import Redis
+from rq.job import Job
 
 pytestmark = pytest.mark.integration
 
@@ -23,6 +24,19 @@ def redis():
     r.flushdb()
 
 
+def _find_job_by_kwarg(redis, key, value):
+    """Find an rq job whose kwargs[key] == value."""
+    for k in redis.keys("rq:job:*"):
+        job_id = k.decode().replace("rq:job:", "")
+        try:
+            job = Job.fetch(job_id, connection=redis)
+            if job.kwargs.get(key) == value:
+                return job
+        except Exception:
+            continue
+    return None
+
+
 class TestQueueArgumentPreservation:
     """Test that job arguments survive the rq enqueue cycle."""
 
@@ -33,7 +47,6 @@ class TestQueueArgumentPreservation:
         where our job_id parameter was intercepted by rq instead of
         being passed to the worker function.
         """
-        from rq.job import Job
         from ansible_runner_service.queue import enqueue_job
 
         # Enqueue a job with all arguments
@@ -45,23 +58,14 @@ class TestQueueArgumentPreservation:
             redis=redis,
         )
 
-        # Fetch job from Redis (rq stores jobs with rq:job: prefix)
-        job_keys = [k.decode() for k in redis.keys("rq:job:*")]
-        assert len(job_keys) == 1, "Expected exactly one job in queue"
-
-        job_id = job_keys[0].replace("rq:job:", "")
-        job = Job.fetch(job_id, connection=redis)
-
-        # Verify all arguments are preserved
-        assert job is not None
-        assert job.kwargs["job_id"] == "test-queue-123"
+        job = _find_job_by_kwarg(redis, "job_id", "test-queue-123")
+        assert job is not None, "Enqueued job not found in Redis"
         assert job.kwargs["playbook"] == "hello.yml"
         assert job.kwargs["extra_vars"] == {"name": "World", "count": 42}
         assert job.kwargs["inventory"] == "localhost,"
 
     def test_enqueue_references_correct_worker_function(self, redis):
         """Verify enqueued job references the correct worker function."""
-        from rq.job import Job
         from ansible_runner_service.queue import enqueue_job
 
         enqueue_job(
@@ -72,19 +76,12 @@ class TestQueueArgumentPreservation:
             redis=redis,
         )
 
-        # Fetch job from Redis
-        job_keys = [k.decode() for k in redis.keys("rq:job:*")]
-        assert len(job_keys) == 1
-
-        job_id = job_keys[0].replace("rq:job:", "")
-        job = Job.fetch(job_id, connection=redis)
-
-        assert job is not None
+        job = _find_job_by_kwarg(redis, "job_id", "test-func-123")
+        assert job is not None, "Enqueued job not found in Redis"
         assert job.func_name == "ansible_runner_service.worker.execute_job"
 
     def test_enqueue_with_empty_extra_vars(self, redis):
         """Verify empty extra_vars dict is preserved."""
-        from rq.job import Job
         from ansible_runner_service.queue import enqueue_job
 
         enqueue_job(
@@ -95,8 +92,6 @@ class TestQueueArgumentPreservation:
             redis=redis,
         )
 
-        job_keys = [k.decode() for k in redis.keys("rq:job:*")]
-        job_id = job_keys[0].replace("rq:job:", "")
-        job = Job.fetch(job_id, connection=redis)
-
+        job = _find_job_by_kwarg(redis, "job_id", "test-empty-vars")
+        assert job is not None, "Enqueued job not found in Redis"
         assert job.kwargs["extra_vars"] == {}

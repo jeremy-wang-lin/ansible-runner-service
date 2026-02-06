@@ -158,8 +158,12 @@ class TestGetJob:
         mock_job_store = MagicMock()
         mock_job_store.get_job.return_value = None
 
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = None
+
         app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
         app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_repository] = lambda: mock_repo
 
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
