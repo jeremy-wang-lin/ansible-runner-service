@@ -37,6 +37,7 @@ When finishing a branch, **do not proceed if any tests fail or error**. This inc
    alembic upgrade head          # Apply migrations
    rq worker &                   # Start worker for E2E tests
    ```
+   Note: The FastAPI server is NOT needed for tests (pytest uses ASGITransport to test the app directly). Only start uvicorn for manual API testing.
 
 2. **Run full test suite and verify 0 failures, 0 errors:**
    ```bash
