@@ -77,6 +77,18 @@ curl -X POST "http://localhost:8000/api/v1/jobs" \
 | `inventory` | string or object | Host list, inline YAML, or git reference |
 | `options` | object | Execution options (check, diff, tags, etc.) |
 
+## Sync vs Async Mode
+
+Use `?sync=true` for immediate execution or omit for background processing.
+
+| Source | String Inventory | Inline Inventory | Git Inventory |
+|--------|------------------|------------------|---------------|
+| Local playbook | Sync / Async | Sync / Async | Async only |
+| Git playbook | Async only | Async only | Async only |
+| Git role | Async only | Async only | Async only |
+
+**Rule of thumb:** Sync mode works when everything is local (local playbook + string/inline inventory).
+
 ## Documentation
 
 See [docs/usage-guide.md](docs/usage-guide.md) for complete documentation including:

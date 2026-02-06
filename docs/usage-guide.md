@@ -127,6 +127,18 @@ Response (200 OK):
 }
 ```
 
+### Sync vs Async Support Matrix
+
+Not all combinations of source and inventory types are supported in sync mode:
+
+| Source | String Inventory | Inline Inventory | Git Inventory |
+|--------|------------------|------------------|---------------|
+| Local playbook | Sync / Async | Sync / Async | Async only |
+| Git playbook | Async only | Async only | Async only |
+| Git role | Async only | Async only | Async only |
+
+**Rule of thumb:** Sync mode works when everything is local (local playbook + string/inline inventory). Git sources require async mode due to unpredictable clone/install latency.
+
 ### With Extra Variables
 
 ```bash
