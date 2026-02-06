@@ -27,6 +27,26 @@ Requires Redis and MariaDB running (`docker-compose up -d`) with migrations appl
 - **During development:** Run the relevant subset of tests for the code you're changing (e.g., `pytest tests/test_api.py -v`).
 - **When finishing a branch (superpowers:finishing-a-development-branch):** Run the full test suite with no `--ignore` flags. All tests must pass before merge or PR.
 
+### IMPORTANT: All tests must actually pass
+
+When finishing a branch, **do not proceed if any tests fail or error**. This includes:
+
+1. **Start all required services first:**
+   ```bash
+   docker-compose up -d          # Start Redis + MariaDB
+   alembic upgrade head          # Apply migrations
+   rq worker &                   # Start worker for E2E tests
+   ```
+
+2. **Run full test suite and verify 0 failures, 0 errors:**
+   ```bash
+   pytest tests/ -v
+   ```
+
+3. **If tests fail:** Fix them before proceeding. Do NOT rationalize failures as "pre-existing" or "infrastructure issues" - either fix them or start the required services.
+
+4. **Only after all tests pass:** Proceed with merge/PR options.
+
 ## Worktree Directory
 
 .worktrees
