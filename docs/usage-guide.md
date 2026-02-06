@@ -179,6 +179,131 @@ curl -X POST "http://localhost:8000/api/v1/jobs" \
 
 The role name can be a short name (e.g., `nginx`) or a fully qualified collection name (e.g., `mycompany.infra.nginx`). Short names are automatically resolved using the collection's `galaxy.yml`.
 
+### Structured Inventory
+
+The `inventory` field accepts three formats:
+
+#### 1. String inventory (default)
+
+Simple comma-separated host list (Ansible native format):
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playbook": "deploy.yml",
+    "inventory": "web1.example.com,web2.example.com,"
+  }'
+```
+
+#### 2. Inline inventory
+
+Standard Ansible YAML inventory structure passed as JSON. This mirrors the format you would use in an Ansible inventory YAML file:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playbook": "deploy.yml",
+    "inventory": {
+      "type": "inline",
+      "data": {
+        "webservers": {
+          "hosts": {
+            "web1.example.com": {"http_port": 8080},
+            "web2.example.com": {"http_port": 8081}
+          },
+          "vars": {
+            "ansible_user": "deploy"
+          }
+        },
+        "databases": {
+          "hosts": {
+            "db1.example.com": null
+          }
+        }
+      }
+    }
+  }'
+```
+
+The `data` field follows Ansible's inventory YAML structure. Groups are top-level keys, each containing `hosts` and optional `vars`. Host variables are specified as values under the host key (`null` for no variables).
+
+#### 3. Git inventory
+
+Fetch inventory from a Git repository:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playbook": "deploy.yml",
+    "inventory": {
+      "type": "git",
+      "repo": "https://dev.azure.com/org/project/_git/inventory",
+      "branch": "main",
+      "path": "production/hosts.yml"
+    }
+  }'
+```
+
+The `path` can point to:
+- A static inventory file (YAML or INI format)
+- A directory containing multiple inventory files
+- An executable dynamic inventory script
+
+**Note:** Structured inventory (inline and git) is only supported in async mode. Sync mode (`?sync=true`) requires string inventory.
+
+### Execution Options
+
+The `options` field controls how Ansible executes the playbook:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playbook": "deploy.yml",
+    "inventory": "localhost,",
+    "options": {
+      "check": true,
+      "diff": true,
+      "tags": ["deploy", "config"],
+      "skip_tags": ["debug"],
+      "limit": "webservers",
+      "verbosity": 2
+    }
+  }'
+```
+
+#### Available Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `check` | boolean | `false` | Dry-run mode (`--check`). No changes made. |
+| `diff` | boolean | `false` | Show diffs for changed files (`--diff`). |
+| `tags` | list of strings | `[]` | Only run tasks with these tags (`--tags`). |
+| `skip_tags` | list of strings | `[]` | Skip tasks with these tags (`--skip-tags`). |
+| `limit` | string | `null` | Limit to specific hosts/groups (`--limit`). |
+| `verbosity` | integer (0-4) | `0` | Output verbosity level (0=normal, 1=-v, 2=-vv, etc.). |
+| `vault_password_file` | string | `null` | Path to vault password file (placeholder for future HashiCorp Vault integration). |
+
+#### Examples
+
+**Dry-run with diff output:**
+```json
+{"options": {"check": true, "diff": true}}
+```
+
+**Run only specific tags:**
+```json
+{"options": {"tags": ["deploy"], "skip_tags": ["slow-tests"]}}
+```
+
+**Limit to a host group with verbose output:**
+```json
+{"options": {"limit": "webservers", "verbosity": 2}}
+```
+
 ### Configuring Git Providers
 
 Git sources require provider configuration. Set the `GIT_PROVIDERS` environment variable:
@@ -195,6 +320,82 @@ export GITLAB_TOKEN="your-gitlab-access-token"
 **Important:** The API server and rq worker must share the same `GIT_PROVIDERS` and credential environment variables. The worker re-validates the repo URL to look up credentials for cloning. Mismatched configuration between API and worker will cause jobs to fail.
 
 See `config/git_providers.example.yaml` for a full example.
+
+## JobRequest Reference
+
+Complete list of fields accepted by `POST /api/v1/jobs`:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `playbook` | string | Yes* | - | Local playbook filename (e.g., `hello.yml`) |
+| `source` | object | Yes* | - | Git source for playbook or role |
+| `extra_vars` | object | No | `{}` | Variables passed to the playbook |
+| `inventory` | string or object | No | `"localhost,"` | Target hosts (string, inline, or git) |
+| `options` | object | No | `{}` | Execution options (check, tags, etc.) |
+
+*Either `playbook` or `source` is required, but not both.
+
+### Source Object (Git Playbook)
+
+```json
+{
+  "type": "playbook",
+  "repo": "https://dev.azure.com/org/project/_git/repo",
+  "branch": "main",
+  "path": "deploy/app.yml"
+}
+```
+
+### Source Object (Git Role)
+
+```json
+{
+  "type": "role",
+  "repo": "https://gitlab.company.com/team/collection.git",
+  "branch": "v2.0.0",
+  "role": "nginx",
+  "role_vars": {"nginx_port": 8080}
+}
+```
+
+### Inventory Object (Inline)
+
+```json
+{
+  "type": "inline",
+  "data": {
+    "webservers": {
+      "hosts": {"10.0.1.10": {"http_port": 8080}},
+      "vars": {"ansible_user": "deploy"}
+    }
+  }
+}
+```
+
+### Inventory Object (Git)
+
+```json
+{
+  "type": "git",
+  "repo": "https://dev.azure.com/org/project/_git/inventory",
+  "branch": "main",
+  "path": "production/hosts.yml"
+}
+```
+
+### Options Object
+
+```json
+{
+  "check": false,
+  "diff": false,
+  "tags": [],
+  "skip_tags": [],
+  "limit": null,
+  "verbosity": 0,
+  "vault_password_file": null
+}
+```
 
 ## Job Statuses
 
