@@ -1,8 +1,11 @@
 # src/ansible_runner_service/main.py
+import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Union
 
+import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from redis import Redis
@@ -14,6 +17,8 @@ from ansible_runner_service.runner import run_playbook
 from ansible_runner_service.schemas import (
     GitPlaybookSource,
     GitRoleSource,
+    GitInventory,
+    InlineInventory,
     JobRequest,
     JobResponse,
     JobSubmitResponse,
@@ -153,18 +158,30 @@ def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
     options = request.options.model_dump(exclude_defaults=True) or None
 
     if sync:
-        if not isinstance(request.inventory, str):
+        # Git inventory requires clone - not supported in sync mode
+        if isinstance(request.inventory, GitInventory):
             raise HTTPException(
                 status_code=400,
-                detail="Sync mode does not support structured inventory. Use async mode.",
+                detail="Sync mode does not support git inventory. Use async mode.",
             )
-        result = run_playbook(
-            playbook=request.playbook,
-            extra_vars=request.extra_vars,
-            inventory=request.inventory,
-            playbooks_dir=playbooks_dir,
-            options=options,
-        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Resolve inventory to string or file path
+            if isinstance(request.inventory, str):
+                resolved_inventory = request.inventory
+            else:  # InlineInventory
+                inv_path = os.path.join(tmpdir, "inventory.yml")
+                with open(inv_path, "w") as f:
+                    yaml.dump(request.inventory.data, f, default_flow_style=False)
+                resolved_inventory = inv_path
+
+            result = run_playbook(
+                playbook=request.playbook,
+                extra_vars=request.extra_vars,
+                inventory=resolved_inventory,
+                playbooks_dir=playbooks_dir,
+                options=options,
+            )
         return JSONResponse(
             status_code=200,
             content=JobResponse(

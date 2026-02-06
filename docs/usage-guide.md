@@ -252,7 +252,7 @@ The `path` can point to:
 - A directory containing multiple inventory files
 - An executable dynamic inventory script
 
-**Note:** Structured inventory (inline and git) is only supported in async mode. Sync mode (`?sync=true`) requires string inventory.
+**Note:** Sync mode (`?sync=true`) supports string and inline inventory. Git inventory requires async mode due to clone latency.
 
 ### Execution Options
 

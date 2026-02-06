@@ -773,9 +773,18 @@ class TestSubmitWithInventoryAndOptions:
         finally:
             app.dependency_overrides.clear()
 
-    async def test_sync_with_structured_inventory_rejected(self, playbooks_dir: Path):
-        """Sync mode rejects structured inventory with 400."""
-        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+    async def test_sync_with_inline_inventory_supported(self, playbooks_dir: Path):
+        """Sync mode supports inline inventory."""
+        (playbooks_dir / "test.yml").write_text(
+            "---\n"
+            "- hosts: all\n"
+            "  connection: local\n"
+            "  gather_facts: false\n"
+            "  tasks:\n"
+            "    - name: Debug\n"
+            "      ansible.builtin.debug:\n"
+            "        msg: 'Hello from inline inventory'\n"
+        )
 
         app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
 
@@ -787,12 +796,40 @@ class TestSubmitWithInventoryAndOptions:
                         "playbook": "test.yml",
                         "inventory": {
                             "type": "inline",
-                            "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+                            "data": {"all": {"hosts": {"localhost": None}}},
+                        },
+                    },
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "successful"
+            assert "Hello from inline inventory" in data["stdout"]
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_sync_with_git_inventory_rejected(self, playbooks_dir: Path):
+        """Sync mode rejects git inventory with 400."""
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/jobs?sync=true",
+                    json={
+                        "playbook": "test.yml",
+                        "inventory": {
+                            "type": "git",
+                            "repo": "https://dev.azure.com/org/project/_git/inventory",
+                            "path": "hosts.yml",
                         },
                     },
                 )
 
             assert response.status_code == 400
+            assert "git inventory" in response.json()["detail"].lower()
         finally:
             app.dependency_overrides.clear()
 
