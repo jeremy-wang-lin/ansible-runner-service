@@ -143,7 +143,9 @@ D. Structured inventory is only enabled with a feature flag
 
 ## Answers
 
-### 1. Answer: B
+### 1. What happens when you submit a job with inline inventory in sync mode (`?sync=true`)?
+
+**Answer: B**
 
 **B. The inventory is written to a temp YAML file and executed synchronously** ✅
 
@@ -157,7 +159,9 @@ The `_handle_local_source()` function creates a `tempfile.TemporaryDirectory()`,
 
 ---
 
-### 2. Answer: B
+### 2. What happens when you submit a job with git inventory in sync mode (`?sync=true`)?
+
+**Answer: B**
 
 **B. The API returns HTTP 400 requiring async mode** ✅
 
@@ -171,7 +175,9 @@ Git inventory requires cloning a repository, which has unpredictable latency. Th
 
 ---
 
-### 3. Answer: C
+### 3. How does the sync mode handler resolve an inline inventory before running the playbook?
+
+**Answer: C**
 
 **C. Writes the data to a YAML file in a temp directory and passes the file path** ✅
 
@@ -185,7 +191,9 @@ The sync handler uses `yaml.dump(request.inventory.data, f, default_flow_style=F
 
 ---
 
-### 4. Answer: B
+### 4. Why was the inventory column changed from `String(255)` to `JSON` in the migration?
+
+**Answer: B**
 
 **B. To support storing structured inventory (inline/git) as nested objects** ✅
 
@@ -199,7 +207,9 @@ The new inventory formats are dicts with nested structure (type, data, repo, pat
 
 ---
 
-### 5. Answer: B
+### 5. What special handling was needed in the Alembic migration for MariaDB's JSON column?
+
+**Answer: B**
 
 **B. Existing string values had to be wrapped in JSON format before the column type change** ✅
 
@@ -213,7 +223,9 @@ MariaDB's JSON column requires valid JSON. Plain strings like `"localhost,"` wou
 
 ---
 
-### 6. Answer: B
+### 6. How are the `check` and `diff` options passed to ansible-runner differently from `tags` and `limit`?
+
+**Answer: B**
 
 **B. `check` and `diff` go through the `cmdline` parameter, while `tags` and `limit` are direct kwargs** ✅
 
@@ -227,7 +239,9 @@ Ansible-runner doesn't have dedicated `check` or `diff` parameters, so they must
 
 ---
 
-### 7. Answer: B
+### 7. What is the purpose of the `_find_job_by_kwarg()` helper function added to the queue integration tests?
+
+**Answer: B**
 
 **B. To find jobs when the rq worker might have created other job keys concurrently** ✅
 
@@ -241,7 +255,9 @@ The original tests asserted `len(job_keys) == 1`, which failed when the rq worke
 
 ---
 
-### 8. Answer: B
+### 8. Why was `get_repository` added as a dependency override in `test_get_job_not_found`?
+
+**Answer: B**
 
 **B. To prevent the DB fallback from connecting to real MariaDB when the job isn't in Redis** ✅
 
@@ -255,7 +271,9 @@ The `get_job` endpoint has a fallback: if `job_store.get_job()` returns None, it
 
 ---
 
-### 9. Answer: B
+### 9. What path traversal protections exist for the `path` field in `GitPlaybookSource` and `GitInventory`?
+
+**Answer: B**
 
 **B. Schema validation rejects `..` and absolute paths; worker verifies resolved path stays inside repo** ✅
 
@@ -269,7 +287,9 @@ The Pydantic `@field_validator` rejects paths containing `..` or starting with `
 
 ---
 
-### 10. Answer: B
+### 10. In the `JobRequest` schema, how is the choice between `InlineInventory` and `GitInventory` determined when inventory is a dict?
+
+**Answer: B**
 
 **B. Using a Pydantic discriminated union on the `type` field** ✅
 
@@ -283,7 +303,9 @@ The Pydantic `@field_validator` rejects paths containing `..` or starting with `
 
 ---
 
-### 11. Answer: C
+### 11. What is the verbosity range allowed by `ExecutionOptions`, and why?
+
+**Answer: C**
 
 **C. 0-4 because 0 is normal and 1-4 maps to -v through -vvvv** ✅
 
@@ -297,7 +319,9 @@ The schema defines `Field(default=0, ge=0, le=4)`. Ansible-runner converts `verb
 
 ---
 
-### 12. Answer: B
+### 12. Where is `options` stored in the database, and why wasn't a separate table used?
+
+**Answer: B**
 
 **B. As a JSON column in the jobs table, because options are always accessed with the job** ✅
 
@@ -311,7 +335,9 @@ Options are stored in an `options` JSON column. Since options are always read/wr
 
 ---
 
-### 13. Answer: C
+### 13. According to the sync vs async support matrix, which combinations support sync mode?
+
+**Answer: C**
 
 **C. Local playbook with string or inline inventory supports sync mode** ✅
 
@@ -325,7 +351,9 @@ The sync vs async support matrix shows that sync mode works when "everything is 
 
 ---
 
-### 14. Answer: C
+### 14. What TypedDicts were added to `schemas.py` and what are they used for?
+
+**Answer: C**
 
 **C. Worker-side type hints for source_config, inventory, and options dicts** ✅
 
@@ -339,7 +367,9 @@ The sync vs async support matrix shows that sync mode works when "everything is 
 
 ---
 
-### 15. Answer: B
+### 15. How does the code ensure backward compatibility for existing API callers using string inventory?
+
+**Answer: B**
 
 **B. The inventory field accepts `str | StructuredInventory` union type with "localhost," as default** ✅
 
