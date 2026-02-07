@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ansible Runner Service - Code Structure</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-card: #0f3460;
+            --text-primary: #eaeaea;
+            --text-secondary: #a0a0a0;
+            --accent-blue: #4da8da;
+            --accent-green: #4ecca3;
+            --accent-orange: #ff9f43;
+            --accent-purple: #a855f7;
+            --accent-red: #f87171;
+            --border-color: #2d4a7c;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 1rem;
+            color: var(--accent-blue);
+            font-size: 2rem;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+
+        .architecture-diagram {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .architecture-diagram h2 {
+            color: var(--accent-green);
+            margin-bottom: 1rem;
+            font-size: 1.3rem;
+        }
+
+        .flow-diagram {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .flow-box {
+            background: var(--bg-card);
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            text-align: center;
+            min-width: 120px;
+        }
+
+        .flow-box.api { border-color: var(--accent-blue); }
+        .flow-box.store { border-color: var(--accent-green); }
+        .flow-box.worker { border-color: var(--accent-orange); }
+        .flow-box.db { border-color: var(--accent-purple); }
+
+        .flow-arrow {
+            font-size: 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        .modules-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .module-card {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .module-header {
+            padding: 1rem 1.5rem;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+        }
+
+        .module-header:hover {
+            background: var(--bg-card);
+        }
+
+        .module-header h3 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .module-header .icon {
+            font-size: 1.2rem;
+        }
+
+        .module-header .toggle {
+            font-size: 1.2rem;
+            transition: transform 0.3s;
+        }
+
+        .module-card.expanded .toggle {
+            transform: rotate(180deg);
+        }
+
+        .module-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .module-card.expanded .module-content {
+            max-height: 5000px;
+        }
+
+        .module-body {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .module-desc {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+            font-style: italic;
+        }
+
+        .section {
+            margin-bottom: 1.5rem;
+        }
+
+        .section-title {
+            color: var(--accent-blue);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .class-block {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            border-left: 3px solid var(--accent-purple);
+        }
+
+        .class-name {
+            color: var(--accent-purple);
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .class-type {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-left: 0.5rem;
+        }
+
+        .attrs-list, .methods-list {
+            margin-left: 1rem;
+        }
+
+        .attr, .method {
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.85rem;
+            padding: 0.25rem 0;
+            color: var(--text-secondary);
+        }
+
+        .attr::before {
+            content: "•";
+            color: var(--accent-green);
+            margin-right: 0.5rem;
+        }
+
+        .method::before {
+            content: "ƒ";
+            color: var(--accent-orange);
+            margin-right: 0.5rem;
+            font-weight: bold;
+        }
+
+        .function-block {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.5rem;
+            border-left: 3px solid var(--accent-orange);
+        }
+
+        .function-name {
+            color: var(--accent-orange);
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.9rem;
+        }
+
+        .function-desc {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            margin-top: 0.25rem;
+        }
+
+        .type-alias {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            margin-bottom: 0.5rem;
+            border-left: 3px solid var(--accent-green);
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.85rem;
+        }
+
+        .type-name {
+            color: var(--accent-green);
+        }
+
+        .deps-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .dep-tag {
+            background: var(--bg-card);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: var(--accent-blue);
+            border: 1px solid var(--accent-blue);
+        }
+
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+
+        .legend-color.class { background: var(--accent-purple); }
+        .legend-color.function { background: var(--accent-orange); }
+        .legend-color.type { background: var(--accent-green); }
+        .legend-color.dataclass { background: var(--accent-blue); }
+    </style>
+</head>
+<body>
+    <h1>Ansible Runner Service</h1>
+    <p class="subtitle">Code Structure Visualization</p>
+
+    <div class="architecture-diagram">
+        <h2>Request Flow Architecture</h2>
+        <div class="flow-diagram">
+            <div class="flow-box api">
+                <strong>main.py</strong><br>
+                <small>FastAPI Routes</small>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box api">
+                <strong>schemas.py</strong><br>
+                <small>Validation</small>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box store">
+                <strong>job_store.py</strong><br>
+                <small>Redis + DB</small>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box store">
+                <strong>queue.py</strong><br>
+                <small>RQ Enqueue</small>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box worker">
+                <strong>worker.py</strong><br>
+                <small>Job Execution</small>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box worker">
+                <strong>runner.py</strong><br>
+                <small>Ansible Runner</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="legend">
+        <div class="legend-item"><div class="legend-color class"></div> Class (BaseModel/SQLAlchemy)</div>
+        <div class="legend-item"><div class="legend-color dataclass"></div> Dataclass</div>
+        <div class="legend-item"><div class="legend-color function"></div> Function</div>
+        <div class="legend-item"><div class="legend-color type"></div> Type Alias / TypedDict</div>
+    </div>
+
+    <div class="modules-grid">
+        <!-- schemas.py -->
+        <div class="module-card expanded">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">📋</span> schemas.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">Pydantic models for API request/response validation and TypedDicts for worker-side type hints.</p>
+
+                    <div class="section">
+                        <div class="section-title">📦 TypedDicts (Worker Types)</div>
+                        <div class="type-alias"><span class="type-name">PlaybookSourceConfig</span> → type, repo, branch, path</div>
+                        <div class="type-alias"><span class="type-name">RoleSourceConfig</span> → type, repo, branch, role, role_vars</div>
+                        <div class="type-alias"><span class="type-name">InlineInventoryConfig</span> → type, data</div>
+                        <div class="type-alias"><span class="type-name">GitInventoryConfig</span> → type, repo, branch, path</div>
+                        <div class="type-alias"><span class="type-name">ExecutionOptionsConfig</span> → check, diff, tags, skip_tags, limit, verbosity</div>
+                        <div class="type-alias"><span class="type-name">SourceConfig</span> = PlaybookSourceConfig | RoleSourceConfig</div>
+                        <div class="type-alias"><span class="type-name">InventoryConfig</span> = InlineInventoryConfig | GitInventoryConfig</div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">🏗️ Inventory Models</div>
+                        <div class="class-block">
+                            <div class="class-name">InlineInventory<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: Literal["inline"]</div>
+                                <div class="attr">data: dict[str, Any]</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">GitInventory<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: Literal["git"]</div>
+                                <div class="attr">repo: str</div>
+                                <div class="attr">branch: str = "main"</div>
+                                <div class="attr">path: str</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">validate_path() → path traversal check</div>
+                            </div>
+                        </div>
+                        <div class="type-alias"><span class="type-name">StructuredInventory</span> = Union[InlineInventory, GitInventory] (discriminator="type")</div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">🎯 Source Models</div>
+                        <div class="class-block">
+                            <div class="class-name">GitPlaybookSource<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: Literal["playbook"]</div>
+                                <div class="attr">repo, branch, path</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">GitRoleSource<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: Literal["role"]</div>
+                                <div class="attr">repo, branch, role, role_vars</div>
+                            </div>
+                        </div>
+                        <div class="type-alias"><span class="type-name">GitSource</span> = Union[GitPlaybookSource, GitRoleSource]</div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">📝 Request/Response Models</div>
+                        <div class="class-block">
+                            <div class="class-name">ExecutionOptions<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">check, diff: bool = False</div>
+                                <div class="attr">tags, skip_tags: list[str]</div>
+                                <div class="attr">limit: str | None</div>
+                                <div class="attr">verbosity: int (0-4)</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobRequest<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">playbook: str | None</div>
+                                <div class="attr">source: GitSource | None</div>
+                                <div class="attr">extra_vars: dict</div>
+                                <div class="attr">inventory: str | StructuredInventory</div>
+                                <div class="attr">options: ExecutionOptions</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">validate_playbook_or_source() → mutual exclusion</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobResponse<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Sync response - full result</div>
+                            <div class="attrs-list">
+                                <div class="attr">status: str</div>
+                                <div class="attr">rc: int</div>
+                                <div class="attr">stdout: str</div>
+                                <div class="attr">stats: dict</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobSubmitResponse<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Async response - job reference</div>
+                            <div class="attrs-list">
+                                <div class="attr">job_id: str</div>
+                                <div class="attr">status: str</div>
+                                <div class="attr">created_at: str</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobResultSchema<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Job execution result (nested in JobDetail)</div>
+                            <div class="attrs-list">
+                                <div class="attr">rc: int</div>
+                                <div class="attr">stdout: str</div>
+                                <div class="attr">stats: dict</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobDetail<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Full job details for GET /jobs/{id}</div>
+                            <div class="attrs-list">
+                                <div class="attr">job_id, status, playbook: str</div>
+                                <div class="attr">created_at, started_at, finished_at: str | None</div>
+                                <div class="attr">result: JobResultSchema | None</div>
+                                <div class="attr">error: str | None</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobSummary<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Job summary for list endpoint</div>
+                            <div class="attrs-list">
+                                <div class="attr">job_id, status, playbook: str</div>
+                                <div class="attr">created_at, finished_at: str | None</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobListResponse<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Response for GET /jobs list endpoint</div>
+                            <div class="attrs-list">
+                                <div class="attr">jobs: list[JobSummary]</div>
+                                <div class="attr">total, limit, offset: int</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- main.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">🚀</span> main.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">FastAPI application with job submission and retrieval endpoints.</p>
+
+                    <div class="section">
+                        <div class="section-title">🔗 Dependencies</div>
+                        <div class="deps-list">
+                            <span class="dep-tag">schemas</span>
+                            <span class="dep-tag">job_store</span>
+                            <span class="dep-tag">queue</span>
+                            <span class="dep-tag">runner</span>
+                            <span class="dep-tag">repository</span>
+                            <span class="dep-tag">git_config</span>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">get_engine_singleton()</div>
+                            <div class="function-desc">Database engine singleton for connection reuse</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">get_redis() → Redis</div>
+                            <div class="function-desc">Redis connection factory</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">recover_stale_jobs(repository, redis)</div>
+                            <div class="function-desc">Mark stale running jobs as failed on startup</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">lifespan(app)</div>
+                            <div class="function-desc">Startup/shutdown lifecycle handler</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">get_job_store() → JobStore</div>
+                            <div class="function-desc">Dependency injection for job store</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">get_repository() → JobRepository</div>
+                            <div class="function-desc">Dependency injection for repository</div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">🌐 API Endpoints</div>
+                        <div class="function-block">
+                            <div class="function-name">POST /api/v1/jobs → submit_job()</div>
+                            <div class="function-desc">Submit job (sync or async). Routes to _handle_local_source or _handle_git_source</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">GET /api/v1/jobs → list_jobs()</div>
+                            <div class="function-desc">List jobs with pagination and status filter</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">GET /api/v1/jobs/{id} → get_job()</div>
+                            <div class="function-desc">Get job details (Redis first, DB fallback)</div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">🔧 Internal Handlers</div>
+                        <div class="function-block">
+                            <div class="function-name">_handle_local_source()</div>
+                            <div class="function-desc">Handle local playbook: sync execution or queue for async</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_handle_git_source()</div>
+                            <div class="function-desc">Handle git playbook/role: validate provider, queue for async only</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- job_store.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">💾</span> job_store.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">Redis-backed job storage with write-through to database for persistence.</p>
+
+                    <div class="section">
+                        <div class="section-title">📊 Enums</div>
+                        <div class="class-block">
+                            <div class="class-name">JobStatus<span class="class-type">str, Enum</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">PENDING, RUNNING, SUCCESSFUL, FAILED</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">📦 Dataclasses</div>
+                        <div class="class-block">
+                            <div class="class-name">JobResult<span class="class-type">@dataclass</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">rc: int</div>
+                                <div class="attr">stdout: str</div>
+                                <div class="attr">stats: dict</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">Job<span class="class-type">@dataclass</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">job_id, status, playbook, extra_vars, inventory</div>
+                                <div class="attr">created_at, started_at, finished_at</div>
+                                <div class="attr">result: JobResult | None</div>
+                                <div class="attr">source_type, source_repo, source_branch</div>
+                                <div class="attr">options: dict | None</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">🏗️ Classes</div>
+                        <div class="class-block">
+                            <div class="class-name">JobStore</div>
+                            <div class="attrs-list">
+                                <div class="attr">redis: Redis</div>
+                                <div class="attr">ttl: int = 86400 (24h)</div>
+                                <div class="attr">repository: JobRepository | None</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">create_job() → Job (write-through to DB)</div>
+                                <div class="method">get_job(job_id) → Job | None</div>
+                                <div class="method">update_status() → None (DB first, then Redis)</div>
+                                <div class="method">_save_job() → serialize to Redis hash</div>
+                                <div class="method">_deserialize_job() → parse Redis hash to Job</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- worker.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">⚙️</span> worker.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">RQ worker job execution - handles local, git playbook, and git role sources.</p>
+
+                    <div class="section">
+                        <div class="section-title">🔗 Dependencies</div>
+                        <div class="deps-list">
+                            <span class="dep-tag">job_store</span>
+                            <span class="dep-tag">runner</span>
+                            <span class="dep-tag">repository</span>
+                            <span class="dep-tag">git_config</span>
+                            <span class="dep-tag">git_service</span>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">get_engine_singleton()</div>
+                            <div class="function-desc">Database engine singleton</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_resolve_inventory(inventory, tmpdir) → str</div>
+                            <div class="function-desc">Resolve string/inline/git inventory to path</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_execute_local(playbook, extra_vars, inventory, options)</div>
+                            <div class="function-desc">Execute local playbook from playbooks/ dir</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_execute_git_playbook(source_config, ...)</div>
+                            <div class="function-desc">Clone repo, validate path, execute playbook</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_execute_git_role(source_config, ...)</div>
+                            <div class="function-desc">Install collection, resolve FQCN, generate wrapper, execute</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">execute_job(job_id, playbook, extra_vars, inventory, options, source_config)</div>
+                            <div class="function-desc">Main entry point called by RQ worker. Updates status, routes to executor, handles errors.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- runner.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">▶️</span> runner.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">Thin wrapper around ansible-runner for playbook execution.</p>
+
+                    <div class="section">
+                        <div class="section-title">📦 Dataclasses</div>
+                        <div class="class-block">
+                            <div class="class-name">RunResult<span class="class-type">@dataclass</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">status: str</div>
+                                <div class="attr">rc: int</div>
+                                <div class="attr">stdout: str</div>
+                                <div class="attr">stats: dict</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">run_playbook(playbook, extra_vars, inventory, playbooks_dir, envvars, options) → RunResult</div>
+                            <div class="function-desc">
+                                Execute playbook via ansible_runner.run()<br>
+                                • Maps options to kwargs (tags, limit, verbosity)<br>
+                                • check/diff passed via cmdline parameter<br>
+                                • Returns status, rc, stdout, stats
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- queue.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">📬</span> queue.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">RQ queue helpers for async job submission.</p>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">get_queue(redis) → Queue</div>
+                            <div class="function-desc">Create RQ queue instance</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">enqueue_job(job_id, playbook, extra_vars, inventory, source_config, options, redis)</div>
+                            <div class="function-desc">Enqueue job to worker.execute_job via RQ. Uses explicit kwargs to avoid collision with rq internals.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- models.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">🗄️</span> models.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">SQLAlchemy ORM models for MariaDB persistence.</p>
+
+                    <div class="section">
+                        <div class="section-title">🏗️ Classes</div>
+                        <div class="class-block">
+                            <div class="class-name">Base<span class="class-type">DeclarativeBase</span></div>
+                            <div class="function-desc">SQLAlchemy declarative base</div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">JobModel<span class="class-type">Base</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">id: String(36) PK</div>
+                                <div class="attr">status: String(20)</div>
+                                <div class="attr">playbook: String(255)</div>
+                                <div class="attr">extra_vars: JSON</div>
+                                <div class="attr">inventory: JSON</div>
+                                <div class="attr">options: JSON</div>
+                                <div class="attr">created_at, started_at, finished_at: DateTime</div>
+                                <div class="attr">result_rc: Integer, result_stdout: Text, result_stats: JSON</div>
+                                <div class="attr">error: Text</div>
+                                <div class="attr">source_type: String(20), source_repo: String(512), source_branch: String(255)</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- repository.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">📁</span> repository.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">Database CRUD operations for jobs.</p>
+
+                    <div class="section">
+                        <div class="section-title">🏗️ Classes</div>
+                        <div class="class-block">
+                            <div class="class-name">JobRepository</div>
+                            <div class="attrs-list">
+                                <div class="attr">session: Session</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">create(job_id, playbook, ...) → JobModel</div>
+                                <div class="method">get(job_id) → JobModel | None</div>
+                                <div class="method">update_status(job_id, status, ...) → bool</div>
+                                <div class="method">list_jobs(status, limit, offset) → (list, total)</div>
+                                <div class="method">list_stale_running_jobs(threshold) → list</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- database.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">🔌</span> database.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">SQLAlchemy engine and session factory.</p>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">get_database_url() → str</div>
+                            <div class="function-desc">Read DATABASE_URL from environment</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">get_engine(url) → Engine</div>
+                            <div class="function-desc">Create SQLAlchemy engine with pool_pre_ping</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">get_session(engine) → sessionmaker</div>
+                            <div class="function-desc">Create session factory (expire_on_commit=False)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- git_config.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">🔐</span> git_config.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">Git provider configuration and URL validation for allowlist enforcement.</p>
+
+                    <div class="section">
+                        <div class="section-title">🏗️ Classes</div>
+                        <div class="class-block">
+                            <div class="class-name">GitProvider<span class="class-type">@dataclass</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: str ("azure" | "gitlab")</div>
+                                <div class="attr">host: str</div>
+                                <div class="attr">orgs: list[str]</div>
+                                <div class="attr">credential_env: str</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">get_credential() → str (from env var)</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">load_providers() → list[GitProvider]</div>
+                            <div class="function-desc">Load from GIT_PROVIDERS env var (JSON)</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_extract_org(url_path, provider_type) → str</div>
+                            <div class="function-desc">Extract org/group from URL path</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">validate_repo_url(url, providers) → GitProvider</div>
+                            <div class="function-desc">Validate URL against allowlist. Returns matched provider or raises ValueError.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- git_service.py -->
+        <div class="module-card">
+            <div class="module-header" onclick="toggleModule(this)">
+                <h3><span class="icon">📥</span> git_service.py</h3>
+                <span class="toggle">▼</span>
+            </div>
+            <div class="module-content">
+                <div class="module-body">
+                    <p class="module-desc">Git operations: clone, collection install, FQCN resolution, wrapper playbook generation.</p>
+
+                    <div class="section">
+                        <div class="section-title">⚙️ Internal Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">_build_username_url(repo_url, provider) → str</div>
+                            <div class="function-desc">Build URL with username (pat@ for Azure, oauth2@ for GitLab)</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_create_askpass_script(tmpdir) → str</div>
+                            <div class="function-desc">Create GIT_ASKPASS script for secure credential passing</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_subprocess_env(askpass_path, credential) → dict</div>
+                            <div class="function-desc">Build env with GIT_ASKPASS, GIT_TERMINAL_PROMPT=0</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_parse_primary_collection(stdout) → tuple | None</div>
+                            <div class="function-desc">Extract (namespace, name) from ansible-galaxy output</div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">🔧 Public Functions</div>
+                        <div class="function-block">
+                            <div class="function-name">clone_repo(repo_url, branch, target_dir, provider)</div>
+                            <div class="function-desc">Shallow clone with --depth 1 --single-branch. Credential via GIT_ASKPASS.</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">install_collection(repo_url, branch, collections_dir, provider) → tuple | None</div>
+                            <div class="function-desc">Install Ansible collection via ansible-galaxy. Returns (namespace, name).</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">resolve_fqcn(role, collections_dir, collection_info) → str</div>
+                            <div class="function-desc">Resolve short role name to fully qualified (namespace.collection.role)</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">generate_role_wrapper_playbook(fqcn, role_vars) → str</div>
+                            <div class="function-desc">Generate YAML wrapper playbook that runs a role</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleModule(header) {
+            const card = header.closest('.module-card');
+            card.classList.toggle('expanded');
+        }
+
+        // Expand first card by default
+        document.addEventListener('DOMContentLoaded', () => {
+            // Already expanded via class
+        });
+    </script>
+</body>
+</html>
