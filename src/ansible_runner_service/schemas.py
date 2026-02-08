@@ -22,6 +22,41 @@ class RoleSourceConfig(TypedDict):
 SourceConfig = PlaybookSourceConfig | RoleSourceConfig
 
 
+# New unified source configs for queue serialization
+class LocalPlaybookSourceConfig(TypedDict):
+    type: Literal["local"]
+    target: Literal["playbook"]
+    path: str
+
+
+class LocalRoleSourceConfig(TypedDict):
+    type: Literal["local"]
+    target: Literal["role"]
+    collection: str
+    role: str
+    role_vars: dict[str, Any]
+
+
+class GitPlaybookSourceConfig(TypedDict):
+    type: Literal["git"]
+    target: Literal["playbook"]
+    repo: str
+    branch: str
+    path: str
+
+
+class GitRoleSourceConfig(TypedDict):
+    type: Literal["git"]
+    target: Literal["role"]
+    repo: str
+    branch: str
+    role: str
+    role_vars: dict[str, Any]
+
+
+UnifiedSourceConfig = LocalPlaybookSourceConfig | LocalRoleSourceConfig | GitPlaybookSourceConfig | GitRoleSourceConfig
+
+
 class InlineInventoryConfig(TypedDict):
     type: Literal["inline"]
     data: dict[str, Any]

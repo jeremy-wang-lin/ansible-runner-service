@@ -517,3 +517,50 @@ class TestJobRequestUnifiedSource:
         """Playbook field no longer exists."""
         with pytest.raises(ValidationError):
             JobRequest(playbook="hello.yml")
+
+
+class TestSourceConfigTypedDicts:
+    def test_local_playbook_config(self):
+        from ansible_runner_service.schemas import LocalPlaybookSourceConfig
+        config: LocalPlaybookSourceConfig = {
+            "type": "local",
+            "target": "playbook",
+            "path": "hello.yml",
+        }
+        assert config["type"] == "local"
+        assert config["target"] == "playbook"
+
+    def test_local_role_config(self):
+        from ansible_runner_service.schemas import LocalRoleSourceConfig
+        config: LocalRoleSourceConfig = {
+            "type": "local",
+            "target": "role",
+            "collection": "mycompany.infra",
+            "role": "nginx",
+            "role_vars": {},
+        }
+        assert config["collection"] == "mycompany.infra"
+
+    def test_git_playbook_config(self):
+        from ansible_runner_service.schemas import GitPlaybookSourceConfig
+        config: GitPlaybookSourceConfig = {
+            "type": "git",
+            "target": "playbook",
+            "repo": "https://dev.azure.com/org/p/_git/r",
+            "branch": "main",
+            "path": "deploy.yml",
+        }
+        assert config["type"] == "git"
+        assert config["target"] == "playbook"
+
+    def test_git_role_config(self):
+        from ansible_runner_service.schemas import GitRoleSourceConfig
+        config: GitRoleSourceConfig = {
+            "type": "git",
+            "target": "role",
+            "repo": "https://gitlab.com/org/col.git",
+            "branch": "main",
+            "role": "nginx",
+            "role_vars": {"port": 80},
+        }
+        assert config["role"] == "nginx"
