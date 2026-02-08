@@ -37,6 +37,26 @@ When finishing a branch:
 3. If tests fail: fix them. Do NOT rationalize as "pre-existing" or "infrastructure issues"
 4. Only after all tests pass: proceed with merge/PR
 
+## Documentation Requirements
+
+**IMPORTANT: Update these files when finishing any branch that changes API, schemas, or architecture:**
+
+1. **`docs/usage-guide.md`** - Update if:
+   - API request/response format changes
+   - New endpoints or fields added
+   - Sync/async behavior changes
+   - New source types, inventory types, or options added
+
+2. **`docs/code-structure.html`** - Update if:
+   - Architecture or data flow changes
+   - New modules, classes, or significant functions added
+   - Schema structure changes (e.g., discriminators, field relationships)
+
+**Checklist before merge/PR:**
+- [ ] Tests pass
+- [ ] `docs/usage-guide.md` reflects current API
+- [ ] `docs/code-structure.html` reflects current architecture
+
 ## Worktree Directory
 
 .worktrees
