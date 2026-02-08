@@ -66,7 +66,7 @@ class TestAsyncFlow:
         # Submit
         response = await client.post(
             "/api/v1/jobs",
-            json={"playbook": "hello.yml"},
+            json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
         )
         assert response.status_code == 202
         job_id = response.json()["job_id"]
@@ -91,7 +91,7 @@ class TestAsyncFlow:
         """Sync mode bypasses queue."""
         response = await client.post(
             "/api/v1/jobs?sync=true",
-            json={"playbook": "hello.yml"},
+            json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
         )
         assert response.status_code == 200
         data = response.json()
@@ -150,7 +150,7 @@ class TestRedisTTLFallback:
         # Submit a job (creates in both Redis and DB)
         response = await client_with_db.post(
             "/api/v1/jobs",
-            json={"playbook": "hello.yml"},
+            json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
         )
         assert response.status_code == 202
         job_id = response.json()["job_id"]
@@ -275,7 +275,8 @@ class TestGitPlaybookFlow:
             )
 
         source_config = {
-            "type": "playbook",
+            "type": "git",
+            "target": "playbook",
             "repo": "https://fake.example.com/org/repo",
             "branch": "main",
             "path": "deploy/app.yml",
@@ -310,7 +311,8 @@ class TestGitPlaybookFlow:
             os.symlink(str(secret_dir), os.path.join(target_dir, "escape"))
 
         source_config = {
-            "type": "playbook",
+            "type": "git",
+            "target": "playbook",
             "repo": "https://fake.example.com/org/repo",
             "branch": "main",
             "path": "escape/evil.yml",
@@ -403,7 +405,8 @@ class TestGitRoleFlow:
             return _parse_primary_collection(result.stdout)
 
         source_config = {
-            "type": "role",
+            "type": "git",
+            "target": "role",
             "repo": "https://fake.example.com/org/collection",
             "branch": "main",
             "role": "greet",
@@ -454,7 +457,7 @@ class TestE2EWithWorker:
         response = await e2e_client.post(
             "/api/v1/jobs",
             json={
-                "playbook": "hello.yml",
+                "source": {"type": "local", "target": "playbook", "path": "hello.yml"},
                 "extra_vars": {"name": "E2E-Test"},
             },
         )

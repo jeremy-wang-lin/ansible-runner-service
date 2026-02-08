@@ -38,7 +38,8 @@ class TestEnqueueJobWithSource:
                 extra_vars={},
                 inventory="localhost,",
                 source_config={
-                    "type": "playbook",
+                    "type": "git",
+                    "target": "playbook",
                     "repo": "https://dev.azure.com/xxxit/p/_git/r",
                     "branch": "main",
                     "path": "deploy/app.yml",
@@ -47,7 +48,8 @@ class TestEnqueueJobWithSource:
 
         call_args = mock_queue.enqueue.call_args
         job_kwargs = call_args.kwargs["kwargs"]
-        assert job_kwargs["source_config"]["type"] == "playbook"
+        assert job_kwargs["source_config"]["type"] == "git"
+        assert job_kwargs["source_config"]["target"] == "playbook"
         assert job_kwargs["source_config"]["repo"] == "https://dev.azure.com/xxxit/p/_git/r"
 
     def test_enqueue_without_source_config(self):
