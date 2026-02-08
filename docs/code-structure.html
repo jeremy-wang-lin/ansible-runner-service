@@ -139,7 +139,7 @@
         }
 
         .module-card.expanded .module-content {
-            max-height: 5000px;
+            max-height: 8000px;
         }
 
         .module-body {
@@ -288,11 +288,42 @@
         .legend-color.function { background: var(--accent-orange); }
         .legend-color.type { background: var(--accent-green); }
         .legend-color.dataclass { background: var(--accent-blue); }
+
+        .discriminator-box {
+            background: linear-gradient(135deg, var(--bg-card), #1a365d);
+            border: 2px dashed var(--accent-purple);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 0.5rem 0;
+        }
+
+        .discriminator-title {
+            color: var(--accent-purple);
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .discriminator-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+        }
+
+        .source-type-tag {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            text-align: center;
+        }
+
+        .source-type-tag.local { background: var(--accent-green); color: #000; }
+        .source-type-tag.git { background: var(--accent-blue); color: #000; }
     </style>
 </head>
 <body>
     <h1>Ansible Runner Service</h1>
-    <p class="subtitle">Code Structure Visualization</p>
+    <p class="subtitle">Code Structure Visualization (Unified Source Edition)</p>
 
     <div class="architecture-diagram">
         <h2>Request Flow Architecture</h2>
@@ -345,16 +376,31 @@
             </div>
             <div class="module-content">
                 <div class="module-body">
-                    <p class="module-desc">Pydantic models for API request/response validation and TypedDicts for worker-side type hints.</p>
+                    <p class="module-desc">Pydantic models for API request/response validation and TypedDicts for worker-side type hints. Uses two-level discriminated union for unified source handling.</p>
 
                     <div class="section">
-                        <div class="section-title">📦 TypedDicts (Worker Types)</div>
-                        <div class="type-alias"><span class="type-name">PlaybookSourceConfig</span> → type, repo, branch, path</div>
-                        <div class="type-alias"><span class="type-name">RoleSourceConfig</span> → type, repo, branch, role, role_vars</div>
+                        <div class="section-title">📦 TypedDicts (Unified Source Configs)</div>
+                        <div class="discriminator-box">
+                            <div class="discriminator-title">Two-Level Discriminator: type + target</div>
+                            <div class="discriminator-grid">
+                                <div class="source-type-tag local">local + playbook</div>
+                                <div class="source-type-tag local">local + role</div>
+                                <div class="source-type-tag git">git + playbook</div>
+                                <div class="source-type-tag git">git + role</div>
+                            </div>
+                        </div>
+                        <div class="type-alias"><span class="type-name">LocalPlaybookSourceConfig</span> → type="local", target="playbook", path</div>
+                        <div class="type-alias"><span class="type-name">LocalRoleSourceConfig</span> → type="local", target="role", collection, role, role_vars</div>
+                        <div class="type-alias"><span class="type-name">GitPlaybookSourceConfig</span> → type="git", target="playbook", repo, branch, path</div>
+                        <div class="type-alias"><span class="type-name">GitRoleSourceConfig</span> → type="git", target="role", repo, branch, role, role_vars</div>
+                        <div class="type-alias"><span class="type-name">UnifiedSourceConfig</span> = LocalPlaybook | LocalRole | GitPlaybook | GitRole</div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">📦 TypedDicts (Inventory)</div>
                         <div class="type-alias"><span class="type-name">InlineInventoryConfig</span> → type, data</div>
                         <div class="type-alias"><span class="type-name">GitInventoryConfig</span> → type, repo, branch, path</div>
                         <div class="type-alias"><span class="type-name">ExecutionOptionsConfig</span> → check, diff, tags, skip_tags, limit, verbosity</div>
-                        <div class="type-alias"><span class="type-name">SourceConfig</span> = PlaybookSourceConfig | RoleSourceConfig</div>
                         <div class="type-alias"><span class="type-name">InventoryConfig</span> = InlineInventoryConfig | GitInventoryConfig</div>
                     </div>
 
@@ -383,22 +429,50 @@
                     </div>
 
                     <div class="section">
-                        <div class="section-title">🎯 Source Models</div>
+                        <div class="section-title">🎯 Unified Source Models (Two-Level Discriminator)</div>
+                        <div class="class-block">
+                            <div class="class-name">LocalPlaybookSource<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: Literal["local"]</div>
+                                <div class="attr">target: Literal["playbook"]</div>
+                                <div class="attr">path: str (min_length=1)</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">validate_path() → path traversal check</div>
+                            </div>
+                        </div>
+                        <div class="class-block">
+                            <div class="class-name">LocalRoleSource<span class="class-type">BaseModel</span></div>
+                            <div class="attrs-list">
+                                <div class="attr">type: Literal["local"]</div>
+                                <div class="attr">target: Literal["role"]</div>
+                                <div class="attr">collection: str (min_length=1)</div>
+                                <div class="attr">role: str (min_length=1)</div>
+                                <div class="attr">role_vars: dict = {}</div>
+                            </div>
+                        </div>
                         <div class="class-block">
                             <div class="class-name">GitPlaybookSource<span class="class-type">BaseModel</span></div>
                             <div class="attrs-list">
-                                <div class="attr">type: Literal["playbook"]</div>
+                                <div class="attr">type: Literal["git"]</div>
+                                <div class="attr">target: Literal["playbook"]</div>
                                 <div class="attr">repo, branch, path</div>
+                            </div>
+                            <div class="methods-list">
+                                <div class="method">validate_path() → path traversal check</div>
                             </div>
                         </div>
                         <div class="class-block">
                             <div class="class-name">GitRoleSource<span class="class-type">BaseModel</span></div>
                             <div class="attrs-list">
-                                <div class="attr">type: Literal["role"]</div>
-                                <div class="attr">repo, branch, role, role_vars</div>
+                                <div class="attr">type: Literal["git"]</div>
+                                <div class="attr">target: Literal["role"]</div>
+                                <div class="attr">repo, branch: str</div>
+                                <div class="attr">role: str (min_length=1)</div>
+                                <div class="attr">role_vars: dict = {}</div>
                             </div>
                         </div>
-                        <div class="type-alias"><span class="type-name">GitSource</span> = Union[GitPlaybookSource, GitRoleSource]</div>
+                        <div class="type-alias"><span class="type-name">Source</span> = Union[LocalPlaybook, LocalRole, GitPlaybook, GitRole] (custom discriminator)</div>
                     </div>
 
                     <div class="section">
@@ -414,15 +488,12 @@
                         </div>
                         <div class="class-block">
                             <div class="class-name">JobRequest<span class="class-type">BaseModel</span></div>
+                            <div class="function-desc">Unified source field (no legacy playbook field)</div>
                             <div class="attrs-list">
-                                <div class="attr">playbook: str | None</div>
-                                <div class="attr">source: GitSource | None</div>
+                                <div class="attr">source: Source (required)</div>
                                 <div class="attr">extra_vars: dict</div>
                                 <div class="attr">inventory: str | StructuredInventory</div>
                                 <div class="attr">options: ExecutionOptions</div>
-                            </div>
-                            <div class="methods-list">
-                                <div class="method">validate_playbook_or_source() → mutual exclusion</div>
                             </div>
                         </div>
                         <div class="class-block">
@@ -492,7 +563,7 @@
             </div>
             <div class="module-content">
                 <div class="module-body">
-                    <p class="module-desc">FastAPI application with job submission and retrieval endpoints.</p>
+                    <p class="module-desc">FastAPI application with unified source handling. Routes to sync/async execution based on source type.</p>
 
                     <div class="section">
                         <div class="section-title">🔗 Dependencies</div>
@@ -503,11 +574,12 @@
                             <span class="dep-tag">runner</span>
                             <span class="dep-tag">repository</span>
                             <span class="dep-tag">git_config</span>
+                            <span class="dep-tag">git_service</span>
                         </div>
                     </div>
 
                     <div class="section">
-                        <div class="section-title">⚙️ Functions</div>
+                        <div class="section-title">⚙️ Dependency Providers</div>
                         <div class="function-block">
                             <div class="function-name">get_engine_singleton()</div>
                             <div class="function-desc">Database engine singleton for connection reuse</div>
@@ -517,12 +589,12 @@
                             <div class="function-desc">Redis connection factory</div>
                         </div>
                         <div class="function-block">
-                            <div class="function-name">recover_stale_jobs(repository, redis)</div>
-                            <div class="function-desc">Mark stale running jobs as failed on startup</div>
+                            <div class="function-name">get_playbooks_dir() → Path</div>
+                            <div class="function-desc">Local playbooks directory (bundled content)</div>
                         </div>
                         <div class="function-block">
-                            <div class="function-name">lifespan(app)</div>
-                            <div class="function-desc">Startup/shutdown lifecycle handler</div>
+                            <div class="function-name">get_collections_dir() → Path</div>
+                            <div class="function-desc">Local collections directory (bundled content for K8s)</div>
                         </div>
                         <div class="function-block">
                             <div class="function-name">get_job_store() → JobStore</div>
@@ -538,7 +610,7 @@
                         <div class="section-title">🌐 API Endpoints</div>
                         <div class="function-block">
                             <div class="function-name">POST /api/v1/jobs → submit_job()</div>
-                            <div class="function-desc">Submit job (sync or async). Routes to _handle_local_source or _handle_git_source</div>
+                            <div class="function-desc">Unified job submission. Sync mode for local sources only. Git sources require async.</div>
                         </div>
                         <div class="function-block">
                             <div class="function-name">GET /api/v1/jobs → list_jobs()</div>
@@ -551,14 +623,22 @@
                     </div>
 
                     <div class="section">
-                        <div class="section-title">🔧 Internal Handlers</div>
+                        <div class="section-title">🔧 Internal Helpers</div>
                         <div class="function-block">
-                            <div class="function-name">_handle_local_source()</div>
-                            <div class="function-desc">Handle local playbook: sync execution or queue for async</div>
+                            <div class="function-name">_build_source_config(source) → UnifiedSourceConfig</div>
+                            <div class="function-desc">Convert Pydantic model to TypedDict for queue serialization</div>
                         </div>
                         <div class="function-block">
-                            <div class="function-name">_handle_git_source()</div>
-                            <div class="function-desc">Handle git playbook/role: validate provider, queue for async only</div>
+                            <div class="function-name">_execute_sync(source, extra_vars, inventory, ...)</div>
+                            <div class="function-desc">Synchronous execution for local sources (playbook or role)</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">recover_stale_jobs(repository, redis)</div>
+                            <div class="function-desc">Mark stale running jobs as failed on startup</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">lifespan(app)</div>
+                            <div class="function-desc">Startup/shutdown lifecycle handler</div>
                         </div>
                     </div>
                 </div>
@@ -601,7 +681,9 @@
                                 <div class="attr">job_id, status, playbook, extra_vars, inventory</div>
                                 <div class="attr">created_at, started_at, finished_at</div>
                                 <div class="attr">result: JobResult | None</div>
-                                <div class="attr">source_type, source_repo, source_branch</div>
+                                <div class="attr">source_type: str = "local"</div>
+                                <div class="attr">source_target: str = "playbook"</div>
+                                <div class="attr">source_repo, source_branch: str | None</div>
                                 <div class="attr">options: dict | None</div>
                             </div>
                         </div>
@@ -617,7 +699,7 @@
                                 <div class="attr">repository: JobRepository | None</div>
                             </div>
                             <div class="methods-list">
-                                <div class="method">create_job() → Job (write-through to DB)</div>
+                                <div class="method">create_job(..., source_type, source_target) → Job</div>
                                 <div class="method">get_job(job_id) → Job | None</div>
                                 <div class="method">update_status() → None (DB first, then Redis)</div>
                                 <div class="method">_save_job() → serialize to Redis hash</div>
@@ -637,7 +719,7 @@
             </div>
             <div class="module-content">
                 <div class="module-body">
-                    <p class="module-desc">RQ worker job execution - handles local, git playbook, and git role sources.</p>
+                    <p class="module-desc">RQ worker job execution - handles all four source types (local/git × playbook/role).</p>
 
                     <div class="section">
                         <div class="section-title">🔗 Dependencies</div>
@@ -653,8 +735,12 @@
                     <div class="section">
                         <div class="section-title">⚙️ Functions</div>
                         <div class="function-block">
-                            <div class="function-name">get_engine_singleton()</div>
-                            <div class="function-desc">Database engine singleton</div>
+                            <div class="function-name">get_playbooks_dir() → Path</div>
+                            <div class="function-desc">Local playbooks directory</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">get_collections_dir() → Path</div>
+                            <div class="function-desc">Local collections directory (bundled content)</div>
                         </div>
                         <div class="function-block">
                             <div class="function-name">_resolve_inventory(inventory, tmpdir) → str</div>
@@ -663,6 +749,10 @@
                         <div class="function-block">
                             <div class="function-name">_execute_local(playbook, extra_vars, inventory, options)</div>
                             <div class="function-desc">Execute local playbook from playbooks/ dir</div>
+                        </div>
+                        <div class="function-block">
+                            <div class="function-name">_execute_local_role(source_config, ...)</div>
+                            <div class="function-desc">Execute local role from bundled collections. Generates wrapper playbook.</div>
                         </div>
                         <div class="function-block">
                             <div class="function-name">_execute_git_playbook(source_config, ...)</div>
@@ -674,7 +764,7 @@
                         </div>
                         <div class="function-block">
                             <div class="function-name">execute_job(job_id, playbook, extra_vars, inventory, options, source_config)</div>
-                            <div class="function-desc">Main entry point called by RQ worker. Updates status, routes to executor, handles errors.</div>
+                            <div class="function-desc">Main entry point. Routes based on type+target: local/playbook, local/role, git/playbook, git/role</div>
                         </div>
                     </div>
                 </div>
@@ -712,6 +802,7 @@
                                 Execute playbook via ansible_runner.run()<br>
                                 • Maps options to kwargs (tags, limit, verbosity)<br>
                                 • check/diff passed via cmdline parameter<br>
+                                • envvars for ANSIBLE_COLLECTIONS_PATH<br>
                                 • Returns status, rc, stdout, stats
                             </div>
                         </div>
@@ -737,7 +828,7 @@
                             <div class="function-desc">Create RQ queue instance</div>
                         </div>
                         <div class="function-block">
-                            <div class="function-name">enqueue_job(job_id, playbook, extra_vars, inventory, source_config, options, redis)</div>
+                            <div class="function-name">enqueue_job(job_id, playbook, extra_vars, inventory, source_config: UnifiedSourceConfig, options, redis)</div>
                             <div class="function-desc">Enqueue job to worker.execute_job via RQ. Uses explicit kwargs to avoid collision with rq internals.</div>
                         </div>
                     </div>
@@ -773,7 +864,9 @@
                                 <div class="attr">created_at, started_at, finished_at: DateTime</div>
                                 <div class="attr">result_rc: Integer, result_stdout: Text, result_stats: JSON</div>
                                 <div class="attr">error: Text</div>
-                                <div class="attr">source_type: String(20), source_repo: String(512), source_branch: String(255)</div>
+                                <div class="attr">source_type: String(20) = "local"</div>
+                                <div class="attr">source_target: String(20) = "playbook"</div>
+                                <div class="attr">source_repo: String(512), source_branch: String(255)</div>
                             </div>
                         </div>
                     </div>
@@ -799,7 +892,7 @@
                                 <div class="attr">session: Session</div>
                             </div>
                             <div class="methods-list">
-                                <div class="method">create(job_id, playbook, ...) → JobModel</div>
+                                <div class="method">create(..., source_type, source_target) → JobModel</div>
                                 <div class="method">get(job_id) → JobModel | None</div>
                                 <div class="method">update_status(job_id, status, ...) → bool</div>
                                 <div class="method">list_jobs(status, limit, offset) → (list, total)</div>
@@ -944,11 +1037,6 @@
             const card = header.closest('.module-card');
             card.classList.toggle('expanded');
         }
-
-        // Expand first card by default
-        document.addEventListener('DOMContentLoaded', () => {
-            // Already expanded via class
-        });
     </script>
 </body>
 </html>
