@@ -95,3 +95,75 @@ class TestQueueArgumentPreservation:
         job = _find_job_by_kwarg(redis, "job_id", "test-empty-vars")
         assert job is not None, "Enqueued job not found in Redis"
         assert job.kwargs["extra_vars"] == {}
+
+    def test_enqueue_preserves_local_playbook_source_config(self, redis):
+        """Verify local playbook source_config is preserved through queue."""
+        from ansible_runner_service.queue import enqueue_job
+
+        source_config = {"type": "local", "target": "playbook", "path": "hello.yml"}
+        enqueue_job(
+            job_id="test-local-source",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            source_config=source_config,
+            redis=redis,
+        )
+
+        job = _find_job_by_kwarg(redis, "job_id", "test-local-source")
+        assert job is not None, "Enqueued job not found in Redis"
+        assert job.kwargs["source_config"] == source_config
+
+    def test_enqueue_preserves_git_playbook_source_config(self, redis):
+        """Verify git playbook source_config is preserved through queue."""
+        from ansible_runner_service.queue import enqueue_job
+
+        source_config = {
+            "type": "git",
+            "target": "playbook",
+            "repo": "https://github.com/example/repo",
+            "branch": "main",
+            "path": "deploy/app.yml",
+        }
+        enqueue_job(
+            job_id="test-git-playbook-source",
+            playbook="deploy/app.yml",
+            extra_vars={"app_name": "myapp"},
+            inventory="localhost,",
+            source_config=source_config,
+            redis=redis,
+        )
+
+        job = _find_job_by_kwarg(redis, "job_id", "test-git-playbook-source")
+        assert job is not None, "Enqueued job not found in Redis"
+        assert job.kwargs["source_config"] == source_config
+        assert job.kwargs["source_config"]["type"] == "git"
+        assert job.kwargs["source_config"]["target"] == "playbook"
+
+    def test_enqueue_preserves_git_role_source_config(self, redis):
+        """Verify git role source_config is preserved through queue."""
+        from ansible_runner_service.queue import enqueue_job
+
+        source_config = {
+            "type": "git",
+            "target": "role",
+            "repo": "https://github.com/example/collection",
+            "branch": "main",
+            "role": "deploy",
+            "role_vars": {"environment": "production"},
+        }
+        enqueue_job(
+            job_id="test-git-role-source",
+            playbook="",  # Role execution doesn't use playbook directly
+            extra_vars={},
+            inventory="localhost,",
+            source_config=source_config,
+            redis=redis,
+        )
+
+        job = _find_job_by_kwarg(redis, "job_id", "test-git-role-source")
+        assert job is not None, "Enqueued job not found in Redis"
+        assert job.kwargs["source_config"] == source_config
+        assert job.kwargs["source_config"]["type"] == "git"
+        assert job.kwargs["source_config"]["target"] == "role"
+        assert job.kwargs["source_config"]["role_vars"] == {"environment": "production"}
