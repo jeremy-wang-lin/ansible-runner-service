@@ -236,3 +236,42 @@ class TestJobRepository:
         assert added_job.options == options
         assert added_job.options["forks"] == 10
         assert added_job.options["verbosity"] == 2
+
+    def test_create_job_with_source_target(self):
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+
+        job = repo.create(
+            job_id="test-target-1",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="local",
+            source_target="playbook",
+        )
+
+        added_job = mock_session.add.call_args[0][0]
+        assert added_job.source_target == "playbook"
+
+    def test_create_job_with_local_role(self):
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+
+        job = repo.create(
+            job_id="test-role-1",
+            playbook="nginx",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="local",
+            source_target="role",
+        )
+
+        added_job = mock_session.add.call_args[0][0]
+        assert added_job.source_type == "local"
+        assert added_job.source_target == "role"
