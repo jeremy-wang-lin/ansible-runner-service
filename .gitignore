@@ -41,3 +41,4 @@ htmlcov/
 
 # ansible-runner artifacts
 artifacts/
+.DS_Store
