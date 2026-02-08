@@ -40,7 +40,7 @@ class TestPostJobs:
     async def test_successful_job(self, client: AsyncClient):
         response = await client.post(
             "/api/v1/jobs?sync=true",
-            json={"playbook": "hello.yml"},
+            json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
         )
 
         assert response.status_code == 200
@@ -52,29 +52,30 @@ class TestPostJobs:
     async def test_with_extra_vars(self, client: AsyncClient):
         response = await client.post(
             "/api/v1/jobs?sync=true",
-            json={"playbook": "hello.yml", "extra_vars": {"name": "Claude"}},
+            json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}, "extra_vars": {"name": "Claude"}},
         )
 
         assert response.status_code == 200
         assert "Hello, Claude!" in response.json()["stdout"]
 
     async def test_playbook_not_found(self, client: AsyncClient):
+        # Sync mode validates playbook existence and returns 404
         response = await client.post(
-            "/api/v1/jobs",
-            json={"playbook": "nonexistent.yml"},
+            "/api/v1/jobs?sync=true",
+            json={"source": {"type": "local", "target": "playbook", "path": "nonexistent.yml"}},
         )
 
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
     async def test_path_traversal_blocked(self, client: AsyncClient):
+        # Path traversal is blocked by schema validation (returns 422)
         response = await client.post(
             "/api/v1/jobs",
-            json={"playbook": "../etc/passwd"},
+            json={"source": {"type": "local", "target": "playbook", "path": "../etc/passwd"}},
         )
 
-        assert response.status_code == 400
-        assert "invalid" in response.json()["detail"].lower()
+        assert response.status_code == 422
 
 
 class TestAsyncJobs:
@@ -88,6 +89,8 @@ class TestAsyncJobs:
             extra_vars={},
             inventory="localhost,",
             created_at=datetime(2026, 1, 21, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="local",
+            source_target="playbook",
         )
         mock_redis = MagicMock()
 
@@ -100,7 +103,7 @@ class TestAsyncJobs:
                 with patch("ansible_runner_service.main.enqueue_job") as mock_enqueue:
                     response = await client.post(
                         "/api/v1/jobs",
-                        json={"playbook": "hello.yml"},
+                        json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
                     )
 
             assert response.status_code == 202
@@ -115,7 +118,7 @@ class TestAsyncJobs:
         """Sync mode with ?sync=true."""
         response = await client.post(
             "/api/v1/jobs?sync=true",
-            json={"playbook": "hello.yml"},
+            json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
         )
 
         assert response.status_code == 200
@@ -138,6 +141,8 @@ class TestGetJob:
             finished_at=datetime(2026, 1, 21, 10, 0, 5, tzinfo=timezone.utc),
             result=JobResult(rc=0, stdout="Hello!", stats={}),
             error=None,
+            source_type="local",
+            source_target="playbook",
         )
 
         app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
@@ -322,6 +327,8 @@ class TestGetJobWithDBFallback:
             extra_vars={},
             inventory="localhost,",
             created_at=datetime.now(timezone.utc),
+            source_type="local",
+            source_target="playbook",
         )
 
         mock_store = MagicMock()
@@ -415,6 +422,8 @@ class TestSubmitJobWithDB:
             extra_vars={},
             inventory="localhost,",
             created_at=datetime.now(timezone.utc),
+            source_type="local",
+            source_target="playbook",
         )
 
         mock_store = MagicMock()
@@ -430,7 +439,7 @@ class TestSubmitJobWithDB:
                 with patch("ansible_runner_service.main.enqueue_job"):
                     response = await client.post(
                         "/api/v1/jobs",
-                        json={"playbook": "hello.yml"},
+                        json={"source": {"type": "local", "target": "playbook", "path": "hello.yml"}},
                     )
         finally:
             app.dependency_overrides.clear()
@@ -453,7 +462,8 @@ class TestSubmitGitSource:
             extra_vars={},
             inventory="localhost,",
             created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
-            source_type="playbook",
+            source_type="git",
+            source_target="playbook",
             source_repo="https://dev.azure.com/xxxit/p/_git/r",
             source_branch="main",
         )
@@ -478,7 +488,8 @@ class TestSubmitGitSource:
                         "/api/v1/jobs",
                         json={
                             "source": {
-                                "type": "playbook",
+                                "type": "git",
+                                "target": "playbook",
                                 "repo": "https://dev.azure.com/xxxit/p/_git/r",
                                 "path": "deploy/app.yml",
                             },
@@ -493,7 +504,8 @@ class TestSubmitGitSource:
             # Verify enqueue was called with source_config
             mock_enqueue.assert_called_once()
             enqueue_kwargs = mock_enqueue.call_args[1]
-            assert enqueue_kwargs["source_config"]["type"] == "playbook"
+            assert enqueue_kwargs["source_config"]["type"] == "git"
+            assert enqueue_kwargs["source_config"]["target"] == "playbook"
             assert enqueue_kwargs["source_config"]["repo"] == "https://dev.azure.com/xxxit/p/_git/r"
         finally:
             app.dependency_overrides.clear()
@@ -518,7 +530,8 @@ class TestSubmitGitSource:
                         "/api/v1/jobs",
                         json={
                             "source": {
-                                "type": "playbook",
+                                "type": "git",
+                                "target": "playbook",
                                 "repo": "https://github.com/evil/repo.git",
                                 "path": "deploy.yml",
                             },
@@ -543,7 +556,8 @@ class TestSubmitGitSource:
             extra_vars={},
             inventory="localhost,",
             created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
-            source_type="role",
+            source_type="git",
+            source_target="role",
             source_repo="https://gitlab.company.com/team/col.git",
             source_branch="main",
         )
@@ -568,7 +582,8 @@ class TestSubmitGitSource:
                         "/api/v1/jobs",
                         json={
                             "source": {
-                                "type": "role",
+                                "type": "git",
+                                "target": "role",
                                 "repo": "https://gitlab.company.com/team/col.git",
                                 "role": "nginx",
                                 "role_vars": {"port": 80},
@@ -581,19 +596,12 @@ class TestSubmitGitSource:
             assert data["job_id"] == "role-test-123"
 
             enqueue_kwargs = mock_enqueue.call_args[1]
-            assert enqueue_kwargs["source_config"]["type"] == "role"
+            assert enqueue_kwargs["source_config"]["type"] == "git"
+            assert enqueue_kwargs["source_config"]["target"] == "role"
             assert enqueue_kwargs["source_config"]["role"] == "nginx"
             assert enqueue_kwargs["source_config"]["role_vars"] == {"port": 80}
         finally:
             app.dependency_overrides.clear()
-
-    async def test_legacy_local_playbook_still_works(self, client: AsyncClient):
-        """Existing format still accepted."""
-        response = await client.post(
-            "/api/v1/jobs?sync=true",
-            json={"playbook": "hello.yml"},
-        )
-        assert response.status_code == 200
 
     async def test_git_source_sync_rejected(self, playbooks_dir: Path):
         """Sync mode not supported for Git sources."""
@@ -618,7 +626,8 @@ class TestSubmitGitSource:
                         "/api/v1/jobs?sync=true",
                         json={
                             "source": {
-                                "type": "playbook",
+                                "type": "git",
+                                "target": "playbook",
                                 "repo": "https://dev.azure.com/xxxit/p/_git/r",
                                 "path": "deploy.yml",
                             },
@@ -644,6 +653,8 @@ class TestSubmitWithInventoryAndOptions:
             extra_vars={},
             inventory={"type": "inline", "data": {"webservers": {"hosts": {"10.0.1.10": None}}}},
             created_at=datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="local",
+            source_target="playbook",
         )
         mock_redis_inst = MagicMock()
 
@@ -659,7 +670,7 @@ class TestSubmitWithInventoryAndOptions:
                     response = await client.post(
                         "/api/v1/jobs",
                         json={
-                            "playbook": "test.yml",
+                            "source": {"type": "local", "target": "playbook", "path": "test.yml"},
                             "inventory": {
                                 "type": "inline",
                                 "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
@@ -697,6 +708,8 @@ class TestSubmitWithInventoryAndOptions:
             inventory="localhost,",
             created_at=datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
             options={"check": True, "tags": ["deploy"]},
+            source_type="local",
+            source_target="playbook",
         )
         mock_redis_inst = MagicMock()
 
@@ -712,7 +725,7 @@ class TestSubmitWithInventoryAndOptions:
                     response = await client.post(
                         "/api/v1/jobs",
                         json={
-                            "playbook": "test.yml",
+                            "source": {"type": "local", "target": "playbook", "path": "test.yml"},
                             "options": {"check": True, "tags": ["deploy"]},
                         },
                     )
@@ -731,7 +744,7 @@ class TestSubmitWithInventoryAndOptions:
             app.dependency_overrides.clear()
 
     async def test_string_inventory_still_works(self, playbooks_dir: Path):
-        """Legacy string inventory still passes through correctly."""
+        """String inventory still passes through correctly."""
         from ansible_runner_service.job_store import Job, JobStatus
 
         mock_store = MagicMock()
@@ -742,6 +755,8 @@ class TestSubmitWithInventoryAndOptions:
             extra_vars={},
             inventory="myhost,",
             created_at=datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
+            source_type="local",
+            source_target="playbook",
         )
         mock_redis_inst = MagicMock()
 
@@ -757,7 +772,7 @@ class TestSubmitWithInventoryAndOptions:
                     response = await client.post(
                         "/api/v1/jobs",
                         json={
-                            "playbook": "test.yml",
+                            "source": {"type": "local", "target": "playbook", "path": "test.yml"},
                             "inventory": "myhost,",
                         },
                     )
@@ -793,7 +808,7 @@ class TestSubmitWithInventoryAndOptions:
                 response = await client.post(
                     "/api/v1/jobs?sync=true",
                     json={
-                        "playbook": "test.yml",
+                        "source": {"type": "local", "target": "playbook", "path": "test.yml"},
                         "inventory": {
                             "type": "inline",
                             "data": {"all": {"hosts": {"localhost": None}}},
@@ -819,7 +834,7 @@ class TestSubmitWithInventoryAndOptions:
                 response = await client.post(
                     "/api/v1/jobs?sync=true",
                     json={
-                        "playbook": "test.yml",
+                        "source": {"type": "local", "target": "playbook", "path": "test.yml"},
                         "inventory": {
                             "type": "git",
                             "repo": "https://dev.azure.com/org/project/_git/inventory",
@@ -844,7 +859,7 @@ class TestSubmitWithInventoryAndOptions:
                 response = await client.post(
                     "/api/v1/jobs",
                     json={
-                        "playbook": "test.yml",
+                        "source": {"type": "local", "target": "playbook", "path": "test.yml"},
                         "inventory": {"type": "invalid"},
                     },
                 )

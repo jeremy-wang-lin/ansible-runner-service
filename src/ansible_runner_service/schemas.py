@@ -1,25 +1,42 @@
 # src/ansible_runner_service/schemas.py
 from typing import Any, Annotated, Literal, TypedDict, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator, model_validator
 
 
-class PlaybookSourceConfig(TypedDict):
-    type: Literal["playbook"]
+# Unified source configs for queue serialization
+class LocalPlaybookSourceConfig(TypedDict):
+    type: Literal["local"]
+    target: Literal["playbook"]
+    path: str
+
+
+class LocalRoleSourceConfig(TypedDict):
+    type: Literal["local"]
+    target: Literal["role"]
+    collection: str
+    role: str
+    role_vars: dict[str, Any]
+
+
+class GitPlaybookSourceConfig(TypedDict):
+    type: Literal["git"]
+    target: Literal["playbook"]
     repo: str
     branch: str
     path: str
 
 
-class RoleSourceConfig(TypedDict):
-    type: Literal["role"]
+class GitRoleSourceConfig(TypedDict):
+    type: Literal["git"]
+    target: Literal["role"]
     repo: str
     branch: str
     role: str
     role_vars: dict[str, Any]
 
 
-SourceConfig = PlaybookSourceConfig | RoleSourceConfig
+UnifiedSourceConfig = LocalPlaybookSourceConfig | LocalRoleSourceConfig | GitPlaybookSourceConfig | GitRoleSourceConfig
 
 
 class InlineInventoryConfig(TypedDict):
@@ -82,8 +99,32 @@ class ExecutionOptions(BaseModel):
     vault_password_file: str | None = None
 
 
+# Local sources (bundled content)
+class LocalPlaybookSource(BaseModel):
+    type: Literal["local"]
+    target: Literal["playbook"]
+    path: str = Field(min_length=1)
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, v: str) -> str:
+        if ".." in v or v.startswith("/"):
+            raise ValueError("Path traversal not allowed")
+        return v
+
+
+class LocalRoleSource(BaseModel):
+    type: Literal["local"]
+    target: Literal["role"]
+    collection: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    role_vars: dict[str, Any] = Field(default_factory=dict)
+
+
+# Git sources (remote content)
 class GitPlaybookSource(BaseModel):
-    type: Literal["playbook"]
+    type: Literal["git"]
+    target: Literal["playbook"]
     repo: str
     branch: str = "main"
     path: str
@@ -97,33 +138,56 @@ class GitPlaybookSource(BaseModel):
 
 
 class GitRoleSource(BaseModel):
-    type: Literal["role"]
+    type: Literal["git"]
+    target: Literal["role"]
     repo: str
     branch: str = "main"
-    role: str
+    role: str = Field(min_length=1)
     role_vars: dict[str, Any] = Field(default_factory=dict)
 
 
+# Unified source type with two-level discriminator
+LocalSource = Annotated[
+    Union[LocalPlaybookSource, LocalRoleSource],
+    Field(discriminator="target"),
+]
+
 GitSource = Annotated[
     Union[GitPlaybookSource, GitRoleSource],
-    Field(discriminator="type"),
+    Field(discriminator="target"),
+]
+
+
+def _source_discriminator(v: Any) -> str:
+    """Custom discriminator for unified Source type.
+
+    Uses (type, target) tuple to uniquely identify the source model.
+    """
+    if isinstance(v, dict):
+        type_val = v.get("type", "")
+        target_val = v.get("target", "")
+    else:
+        type_val = getattr(v, "type", "")
+        target_val = getattr(v, "target", "")
+    return f"{type_val}_{target_val}"
+
+
+Source = Annotated[
+    Union[
+        Annotated[LocalPlaybookSource, Tag("local_playbook")],
+        Annotated[LocalRoleSource, Tag("local_role")],
+        Annotated[GitPlaybookSource, Tag("git_playbook")],
+        Annotated[GitRoleSource, Tag("git_role")],
+    ],
+    Discriminator(_source_discriminator),
 ]
 
 
 class JobRequest(BaseModel):
-    playbook: str | None = Field(default=None, min_length=1)
-    source: GitSource | None = None
+    source: Source
     extra_vars: dict[str, Any] = Field(default_factory=dict)
     inventory: str | StructuredInventory = "localhost,"
     options: ExecutionOptions = Field(default_factory=ExecutionOptions)
-
-    @model_validator(mode="after")
-    def validate_playbook_or_source(self):
-        if self.playbook and self.source:
-            raise ValueError("Provide either 'playbook' or 'source', not both")
-        if not self.playbook and not self.source:
-            raise ValueError("Must provide either 'playbook' or 'source'")
-        return self
 
 
 class JobResponse(BaseModel):

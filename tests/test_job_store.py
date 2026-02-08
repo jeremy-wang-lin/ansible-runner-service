@@ -333,3 +333,26 @@ class TestJobStoreInventoryAndOptions:
 
         retrieved = store.get_job(job.job_id)
         assert retrieved.options is None
+
+
+def test_create_job_with_source_target(job_store):
+    job = job_store.create_job(
+        playbook="hello.yml",
+        extra_vars={},
+        inventory="localhost,",
+        source_type="local",
+        source_target="playbook",
+    )
+    assert job.source_target == "playbook"
+
+
+def test_create_job_with_local_role(job_store):
+    job = job_store.create_job(
+        playbook="nginx",  # role name stored in playbook field
+        extra_vars={},
+        inventory="localhost,",
+        source_type="local",
+        source_target="role",
+    )
+    assert job.source_type == "local"
+    assert job.source_target == "role"

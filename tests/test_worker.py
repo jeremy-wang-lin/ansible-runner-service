@@ -168,7 +168,8 @@ class TestPathTraversalProtection:
         mock_clone.side_effect = fake_clone
 
         source_config = {
-            "type": "playbook",
+            "type": "git",
+            "target": "playbook",
             "repo": "https://dev.azure.com/xxxit/p/_git/r",
             "branch": "main",
             "path": "escape/playbook.yml",
@@ -199,7 +200,8 @@ class TestPathTraversalProtection:
         mock_clone.side_effect = fake_clone
 
         source_config = {
-            "type": "playbook",
+            "type": "git",
+            "target": "playbook",
             "repo": "https://dev.azure.com/xxxit/p/_git/r",
             "branch": "main",
             "path": "deploy/../../etc_shadow",
@@ -233,7 +235,8 @@ class TestExecuteJobWithGitSource:
         )
 
         source_config = {
-            "type": "playbook",
+            "type": "git",
+            "target": "playbook",
             "repo": "https://dev.azure.com/xxxit/p/_git/r",
             "branch": "main",
             "path": "deploy/app.yml",
@@ -275,7 +278,8 @@ class TestExecuteJobWithGitSource:
         )
 
         source_config = {
-            "type": "role",
+            "type": "git",
+            "target": "role",
             "repo": "https://gitlab.company.com/platform-team/col.git",
             "branch": "v2.0.0",
             "role": "nginx",
@@ -405,6 +409,41 @@ class TestInlineInventory:
         # Check run_playbook was called with string inventory
         call_kwargs = mock_run_playbook.call_args[1]
         assert call_kwargs["inventory"] == "localhost,"
+
+
+class TestLocalRoleExecution:
+    def test_execute_local_role(self, tmp_path):
+        """Local role execution generates wrapper and runs."""
+        from ansible_runner_service.worker import _execute_local_role
+        from unittest.mock import patch, MagicMock
+
+        source_config = {
+            "type": "local",
+            "target": "role",
+            "collection": "mycompany.infra",
+            "role": "nginx",
+            "role_vars": {"port": 8080},
+        }
+
+        collections_dir = tmp_path / "collections"
+        collections_dir.mkdir()
+
+        with patch("ansible_runner_service.worker.run_playbook") as mock_run, \
+             patch("ansible_runner_service.worker.get_collections_dir") as mock_coll_dir:
+            mock_coll_dir.return_value = collections_dir
+            mock_run.return_value = MagicMock(rc=0, stdout="OK", stats={})
+
+            result = _execute_local_role(
+                source_config=source_config,
+                extra_vars={"key": "value"},
+                inventory="localhost,",
+                options=None,
+            )
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        assert "ANSIBLE_COLLECTIONS_PATH" in call_kwargs.get("envvars", {})
+        assert result.rc == 0
 
 
 class TestWorkerExecutionOptions:
