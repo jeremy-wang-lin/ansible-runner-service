@@ -39,6 +39,7 @@ class Job:
     result: JobResult | None = None
     error: str | None = None
     source_type: str = "local"
+    source_target: str = "playbook"
     source_repo: str | None = None
     source_branch: str | None = None
     options: dict | None = None
@@ -64,6 +65,7 @@ class JobStore:
         extra_vars: dict[str, Any],
         inventory: str | dict,
         source_type: str = "local",
+        source_target: str = "playbook",
         source_repo: str | None = None,
         source_branch: str | None = None,
         options: dict | None = None,
@@ -76,6 +78,7 @@ class JobStore:
             inventory=inventory,
             created_at=datetime.now(timezone.utc),
             source_type=source_type,
+            source_target=source_target,
             source_repo=source_repo,
             source_branch=source_branch,
             options=options,
@@ -92,6 +95,7 @@ class JobStore:
                     inventory=inventory,
                     created_at=job.created_at,
                     source_type=source_type,
+                    source_target=source_target,
                     source_repo=source_repo,
                     source_branch=source_branch,
                     options=options,
@@ -156,6 +160,7 @@ class JobStore:
             "result": json.dumps(asdict(job.result)) if job.result else "",
             "error": job.error or "",
             "source_type": job.source_type,
+            "source_target": job.source_target,
             "source_repo": job.source_repo or "",
             "source_branch": job.source_branch or "",
             "options": json.dumps(job.options) if job.options else "",
@@ -197,6 +202,7 @@ class JobStore:
             result=result,
             error=get_str("error") or None,
             source_type=get_str("source_type") or "local",
+            source_target=get_str("source_target") or "playbook",
             source_repo=get_str("source_repo") or None,
             source_branch=get_str("source_branch") or None,
             options=options,
