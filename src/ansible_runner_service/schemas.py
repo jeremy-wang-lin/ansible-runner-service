@@ -99,8 +99,8 @@ class LocalPlaybookSource(BaseModel):
 class LocalRoleSource(BaseModel):
     type: Literal["local"]
     target: Literal["role"]
-    collection: str
-    role: str
+    collection: str = Field(min_length=1)
+    role: str = Field(min_length=1)
     role_vars: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -125,7 +125,7 @@ class GitRoleSource(BaseModel):
     target: Literal["role"]
     repo: str
     branch: str = "main"
-    role: str
+    role: str = Field(min_length=1)
     role_vars: dict[str, Any] = Field(default_factory=dict)
 
 

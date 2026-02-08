@@ -196,6 +196,15 @@ class TestGitRoleSource:
         )
         assert source.role == "mycompany.infra.nginx"
 
+    def test_empty_role_rejected(self):
+        with pytest.raises(ValidationError):
+            GitRoleSource(
+                type="git",
+                target="role",
+                repo="https://gitlab.company.com/platform-team/collection.git",
+                role="",
+            )
+
 
 class TestUnifiedSourceTypes:
     def test_local_playbook_source(self):
@@ -442,6 +451,26 @@ class TestLocalRoleSource:
             role_vars={"port": 8080},
         )
         assert source.role_vars == {"port": 8080}
+
+    def test_empty_collection_rejected(self):
+        from ansible_runner_service.schemas import LocalRoleSource
+        with pytest.raises(ValidationError):
+            LocalRoleSource(
+                type="local",
+                target="role",
+                collection="",
+                role="nginx",
+            )
+
+    def test_empty_role_rejected(self):
+        from ansible_runner_service.schemas import LocalRoleSource
+        with pytest.raises(ValidationError):
+            LocalRoleSource(
+                type="local",
+                target="role",
+                collection="mycompany.infra",
+                role="",
+            )
 
 
 class TestUnifiedSourceDiscriminator:
