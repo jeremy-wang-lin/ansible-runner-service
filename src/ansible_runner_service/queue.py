@@ -15,8 +15,9 @@ def enqueue_job(
     job_id: str,
     playbook: str,
     extra_vars: dict[str, Any],
-    inventory: str,
+    inventory: str | dict,
     source_config: SourceConfig | None = None,
+    options: dict | None = None,
     redis: Redis | None = None,
 ) -> None:
     """Enqueue a job for async execution."""
@@ -33,5 +34,6 @@ def enqueue_job(
             "extra_vars": extra_vars,
             "inventory": inventory,
             "source_config": source_config,
+            "options": options,
         },
     )

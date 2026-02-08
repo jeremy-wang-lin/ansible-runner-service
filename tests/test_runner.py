@@ -99,3 +99,79 @@ class TestRunPlaybookAbsolutePath:
 
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs["envvars"]["ANSIBLE_COLLECTIONS_PATH"] == "/tmp/collections"
+
+
+class TestRunPlaybookOptions:
+    """Tests for execution options support in run_playbook."""
+
+    def _mock_runner(self):
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_runner.stdout = MagicMock()
+        mock_runner.stdout.read.return_value = "ok"
+        mock_runner.stats = {}
+        return mock_runner
+
+    @patch("ansible_runner_service.runner.ansible_runner.run")
+    def test_run_playbook_with_check_mode(self, mock_run, tmp_path):
+        mock_run.return_value = self._mock_runner()
+        playbook = tmp_path / "test.yml"
+        playbook.write_text("---\n- hosts: all\n  tasks: []")
+
+        run_playbook(
+            playbook=str(playbook),
+            extra_vars={},
+            inventory="localhost,",
+            options={"check": True, "diff": True},
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["cmdline"] == "--check --diff"
+
+    @patch("ansible_runner_service.runner.ansible_runner.run")
+    def test_run_playbook_with_tags(self, mock_run, tmp_path):
+        mock_run.return_value = self._mock_runner()
+        playbook = tmp_path / "test.yml"
+        playbook.write_text("---\n- hosts: all\n  tasks: []")
+
+        run_playbook(
+            playbook=str(playbook),
+            extra_vars={},
+            inventory="localhost,",
+            options={"tags": ["deploy", "config"], "verbosity": 2},
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["tags"] == "deploy,config"
+        assert call_kwargs["verbosity"] == 2
+
+    @patch("ansible_runner_service.runner.ansible_runner.run")
+    def test_run_playbook_with_limit(self, mock_run, tmp_path):
+        mock_run.return_value = self._mock_runner()
+        playbook = tmp_path / "test.yml"
+        playbook.write_text("---\n- hosts: all\n  tasks: []")
+
+        run_playbook(
+            playbook=str(playbook),
+            extra_vars={},
+            inventory="localhost,",
+            options={"limit": "webservers", "skip_tags": ["debug"]},
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["limit"] == "webservers"
+        assert call_kwargs["skip_tags"] == "debug"
+
+    @patch("ansible_runner_service.runner.ansible_runner.run")
+    def test_run_playbook_without_options(self, mock_run, tmp_path):
+        """Backward compat - no options param."""
+        mock_run.return_value = self._mock_runner()
+        playbook = tmp_path / "test.yml"
+        playbook.write_text("---\n- hosts: all\n  tasks: []")
+
+        run_playbook(
+            playbook=str(playbook),
+            extra_vars={},
+            inventory="localhost,",
+        )
+        call_kwargs = mock_run.call_args[1]
+        assert "cmdline" not in call_kwargs
+        assert "tags" not in call_kwargs

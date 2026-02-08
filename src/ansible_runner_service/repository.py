@@ -17,11 +17,12 @@ class JobRepository:
         job_id: str,
         playbook: str,
         extra_vars: dict[str, Any],
-        inventory: str,
+        inventory: str | dict,
         created_at: datetime,
         source_type: str = "local",
         source_repo: str | None = None,
         source_branch: str | None = None,
+        options: dict | None = None,
     ) -> JobModel:
         """Create a new job record."""
         job = JobModel(
@@ -34,6 +35,7 @@ class JobRepository:
             source_type=source_type,
             source_repo=source_repo,
             source_branch=source_branch,
+            options=options,
         )
         self.session.add(job)
         self.session.commit()

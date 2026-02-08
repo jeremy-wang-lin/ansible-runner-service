@@ -64,3 +64,40 @@ class TestEnqueueJobWithSource:
         call_args = mock_queue.enqueue.call_args
         job_kwargs = call_args.kwargs["kwargs"]
         assert job_kwargs["source_config"] is None
+
+
+class TestEnqueueJobWithOptions:
+    def test_enqueue_with_options(self):
+        mock_queue = MagicMock()
+
+        options = {"forks": 10, "verbosity": 2}
+
+        with patch("ansible_runner_service.queue.Queue", return_value=mock_queue):
+            enqueue_job(
+                job_id="test-opts-123",
+                playbook="hello.yml",
+                extra_vars={},
+                inventory="localhost,",
+                options=options,
+            )
+
+        call_args = mock_queue.enqueue.call_args
+        job_kwargs = call_args.kwargs["kwargs"]
+        assert job_kwargs["options"] == options
+        assert job_kwargs["options"]["forks"] == 10
+        assert job_kwargs["options"]["verbosity"] == 2
+
+    def test_enqueue_without_options(self):
+        mock_queue = MagicMock()
+
+        with patch("ansible_runner_service.queue.Queue", return_value=mock_queue):
+            enqueue_job(
+                job_id="test-no-opts-123",
+                playbook="hello.yml",
+                extra_vars={},
+                inventory="localhost,",
+            )
+
+        call_args = mock_queue.enqueue.call_args
+        job_kwargs = call_args.kwargs["kwargs"]
+        assert job_kwargs["options"] is None

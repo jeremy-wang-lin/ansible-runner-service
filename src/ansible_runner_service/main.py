@@ -1,8 +1,11 @@
 # src/ansible_runner_service/main.py
+import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Union
 
+import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from redis import Redis
@@ -14,6 +17,8 @@ from ansible_runner_service.runner import run_playbook
 from ansible_runner_service.schemas import (
     GitPlaybookSource,
     GitRoleSource,
+    GitInventory,
+    InlineInventory,
     JobRequest,
     JobResponse,
     JobSubmitResponse,
@@ -144,13 +149,39 @@ def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
             status_code=404, detail=f"Playbook not found: {request.playbook}"
         )
 
+    # Serialize inventory for storage/queue
+    inventory = request.inventory
+    if not isinstance(inventory, str):
+        inventory = inventory.model_dump()
+
+    # Serialize options (exclude defaults for compact storage)
+    options = request.options.model_dump(exclude_defaults=True) or None
+
     if sync:
-        result = run_playbook(
-            playbook=request.playbook,
-            extra_vars=request.extra_vars,
-            inventory=request.inventory,
-            playbooks_dir=playbooks_dir,
-        )
+        # Git inventory requires clone - not supported in sync mode
+        if isinstance(request.inventory, GitInventory):
+            raise HTTPException(
+                status_code=400,
+                detail="Sync mode does not support git inventory. Use async mode.",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Resolve inventory to string or file path
+            if isinstance(request.inventory, str):
+                resolved_inventory = request.inventory
+            else:  # InlineInventory
+                inv_path = os.path.join(tmpdir, "inventory.yml")
+                with open(inv_path, "w") as f:
+                    yaml.dump(request.inventory.data, f, default_flow_style=False)
+                resolved_inventory = inv_path
+
+            result = run_playbook(
+                playbook=request.playbook,
+                extra_vars=request.extra_vars,
+                inventory=resolved_inventory,
+                playbooks_dir=playbooks_dir,
+                options=options,
+            )
         return JSONResponse(
             status_code=200,
             content=JobResponse(
@@ -164,14 +195,16 @@ def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
     job = job_store.create_job(
         playbook=request.playbook,
         extra_vars=request.extra_vars,
-        inventory=request.inventory,
+        inventory=inventory,
+        options=options,
     )
 
     enqueue_job(
         job_id=job.job_id,
         playbook=request.playbook,
         extra_vars=request.extra_vars,
-        inventory=request.inventory,
+        inventory=inventory,
+        options=options,
         redis=redis,
     )
 
@@ -220,6 +253,14 @@ def _handle_git_source(request, sync, job_store, redis):
     else:
         raise HTTPException(status_code=400, detail="Unknown source type")
 
+    # Serialize inventory for storage/queue
+    inventory = request.inventory
+    if not isinstance(inventory, str):
+        inventory = inventory.model_dump()
+
+    # Serialize options (exclude defaults for compact storage)
+    options = request.options.model_dump(exclude_defaults=True) or None
+
     if sync:
         raise HTTPException(
             status_code=400,
@@ -229,18 +270,20 @@ def _handle_git_source(request, sync, job_store, redis):
     job = job_store.create_job(
         playbook=playbook,
         extra_vars=request.extra_vars,
-        inventory=request.inventory,
+        inventory=inventory,
         source_type=source.type,
         source_repo=source.repo,
         source_branch=source.branch,
+        options=options,
     )
 
     enqueue_job(
         job_id=job.job_id,
         playbook=playbook,
         extra_vars=request.extra_vars,
-        inventory=request.inventory,
+        inventory=inventory,
         source_config=source_config,
+        options=options,
         redis=redis,
     )
 

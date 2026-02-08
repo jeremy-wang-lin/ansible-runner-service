@@ -254,3 +254,82 @@ class TestJobStoreSourceFields:
         assert job.source_type == "playbook"
         assert job.source_repo == "https://dev.azure.com/xxxit/p/_git/r"
         assert job.source_branch == "main"
+
+
+class _FakeRedis:
+    """Minimal in-memory Redis mock supporting hset/hgetall/expire/delete."""
+
+    def __init__(self):
+        self._data: dict[str, dict[bytes, bytes]] = {}
+
+    def hset(self, name: str, key=None, value=None, mapping=None):
+        if name not in self._data:
+            self._data[name] = {}
+        if mapping:
+            for k, v in mapping.items():
+                self._data[name][k.encode() if isinstance(k, str) else k] = (
+                    v.encode() if isinstance(v, str) else v
+                )
+        if key is not None and value is not None:
+            k = key.encode() if isinstance(key, str) else key
+            v = value.encode() if isinstance(value, str) else value
+            self._data[name][k] = v
+
+    def hgetall(self, name: str) -> dict[bytes, bytes]:
+        return dict(self._data.get(name, {}))
+
+    def expire(self, name: str, time: int):
+        pass
+
+    def delete(self, *names):
+        for name in names:
+            self._data.pop(name, None)
+
+
+class TestJobStoreInventoryAndOptions:
+    @pytest.fixture
+    def redis(self):
+        return _FakeRedis()
+
+    def test_create_job_with_inline_inventory(self, redis):
+        store = JobStore(redis)
+        inventory = {"type": "inline", "data": {"all": {"hosts": {"host1": None}}}}
+        job = store.create_job(
+            playbook="test.yml", extra_vars={}, inventory=inventory
+        )
+        assert job.inventory == inventory
+
+        retrieved = store.get_job(job.job_id)
+        assert retrieved.inventory == inventory
+
+    def test_create_job_with_string_inventory(self, redis):
+        store = JobStore(redis)
+        job = store.create_job(
+            playbook="test.yml", extra_vars={}, inventory="localhost,"
+        )
+        assert job.inventory == "localhost,"
+
+        retrieved = store.get_job(job.job_id)
+        assert retrieved.inventory == "localhost,"
+
+    def test_create_job_with_options(self, redis):
+        store = JobStore(redis)
+        options = {"check": True, "tags": ["deploy"], "verbosity": 2}
+        job = store.create_job(
+            playbook="test.yml", extra_vars={}, inventory="localhost,",
+            options=options,
+        )
+        assert job.options == options
+
+        retrieved = store.get_job(job.job_id)
+        assert retrieved.options == options
+
+    def test_create_job_without_options(self, redis):
+        store = JobStore(redis)
+        job = store.create_job(
+            playbook="test.yml", extra_vars={}, inventory="localhost,"
+        )
+        assert job.options is None
+
+        retrieved = store.get_job(job.job_id)
+        assert retrieved.options is None

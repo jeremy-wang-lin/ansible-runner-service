@@ -187,3 +187,52 @@ class TestJobRepository:
         added_job = mock_session.add.call_args[0][0]
         assert added_job.source_type == "local"
         assert added_job.source_repo is None
+
+    def test_create_job_with_dict_inventory(self):
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+
+        inventory = {
+            "all": {
+                "hosts": {
+                    "web1": {"ansible_host": "192.168.1.10"},
+                    "web2": {"ansible_host": "192.168.1.11"},
+                },
+            },
+        }
+
+        job = repo.create(
+            job_id="test-dict-inv-123",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory=inventory,
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        added_job = mock_session.add.call_args[0][0]
+        assert added_job.inventory == inventory
+        assert added_job.inventory["all"]["hosts"]["web1"]["ansible_host"] == "192.168.1.10"
+
+    def test_create_job_with_options(self):
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+
+        options = {"forks": 10, "verbosity": 2}
+
+        job = repo.create(
+            job_id="test-opts-123",
+            playbook="hello.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 1, 29, 10, 0, 0, tzinfo=timezone.utc),
+            options=options,
+        )
+
+        added_job = mock_session.add.call_args[0][0]
+        assert added_job.options == options
+        assert added_job.options["forks"] == 10
+        assert added_job.options["verbosity"] == 2

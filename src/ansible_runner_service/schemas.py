@@ -22,6 +22,66 @@ class RoleSourceConfig(TypedDict):
 SourceConfig = PlaybookSourceConfig | RoleSourceConfig
 
 
+class InlineInventoryConfig(TypedDict):
+    type: Literal["inline"]
+    data: dict[str, Any]
+
+
+class GitInventoryConfig(TypedDict):
+    type: Literal["git"]
+    repo: str
+    branch: str
+    path: str
+
+
+InventoryConfig = InlineInventoryConfig | GitInventoryConfig
+
+
+class ExecutionOptionsConfig(TypedDict, total=False):
+    check: bool
+    diff: bool
+    tags: list[str]
+    skip_tags: list[str]
+    limit: str
+    verbosity: int
+    vault_password_file: str
+
+
+class InlineInventory(BaseModel):
+    type: Literal["inline"]
+    data: dict[str, Any]
+
+
+class GitInventory(BaseModel):
+    type: Literal["git"]
+    repo: str
+    branch: str = "main"
+    path: str
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, v: str) -> str:
+        if ".." in v or v.startswith("/"):
+            raise ValueError("Path traversal not allowed")
+        return v
+
+
+StructuredInventory = Annotated[
+    Union[InlineInventory, GitInventory],
+    Field(discriminator="type"),
+]
+
+
+class ExecutionOptions(BaseModel):
+    check: bool = False
+    diff: bool = False
+    tags: list[str] = Field(default_factory=list)
+    skip_tags: list[str] = Field(default_factory=list)
+    limit: str | None = None
+    verbosity: int = Field(default=0, ge=0, le=4)
+    vault_password_file: str | None = None
+
+
 class GitPlaybookSource(BaseModel):
     type: Literal["playbook"]
     repo: str
@@ -54,7 +114,8 @@ class JobRequest(BaseModel):
     playbook: str | None = Field(default=None, min_length=1)
     source: GitSource | None = None
     extra_vars: dict[str, Any] = Field(default_factory=dict)
-    inventory: str = "localhost,"
+    inventory: str | StructuredInventory = "localhost,"
+    options: ExecutionOptions = Field(default_factory=ExecutionOptions)
 
     @model_validator(mode="after")
     def validate_playbook_or_source(self):

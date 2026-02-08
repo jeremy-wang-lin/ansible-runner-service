@@ -158,8 +158,12 @@ class TestGetJob:
         mock_job_store = MagicMock()
         mock_job_store.get_job.return_value = None
 
+        mock_repo = MagicMock()
+        mock_repo.get.return_value = None
+
         app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
         app.dependency_overrides[get_job_store] = lambda: mock_job_store
+        app.dependency_overrides[get_repository] = lambda: mock_repo
 
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -623,5 +627,228 @@ class TestSubmitGitSource:
 
             assert response.status_code == 400
             assert "sync" in response.json()["detail"].lower()
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestSubmitWithInventoryAndOptions:
+    async def test_inline_inventory_accepted(self, playbooks_dir: Path):
+        """Inline inventory dict is serialized and passed through."""
+        from ansible_runner_service.job_store import Job, JobStatus
+
+        mock_store = MagicMock()
+        mock_store.create_job.return_value = Job(
+            job_id="inv-test-1",
+            status=JobStatus.PENDING,
+            playbook="test.yml",
+            extra_vars={},
+            inventory={"type": "inline", "data": {"webservers": {"hosts": {"10.0.1.10": None}}}},
+            created_at=datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        mock_redis_inst = MagicMock()
+
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.enqueue_job") as mock_enqueue:
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={
+                            "playbook": "test.yml",
+                            "inventory": {
+                                "type": "inline",
+                                "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+                            },
+                        },
+                    )
+
+            assert response.status_code == 202
+
+            # Verify inventory was serialized as dict and passed through
+            create_kwargs = mock_store.create_job.call_args[1]
+            assert create_kwargs["inventory"] == {
+                "type": "inline",
+                "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+            }
+
+            enqueue_kwargs = mock_enqueue.call_args[1]
+            assert enqueue_kwargs["inventory"] == {
+                "type": "inline",
+                "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
+            }
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_options_accepted(self, playbooks_dir: Path):
+        """Execution options are serialized and passed through."""
+        from ansible_runner_service.job_store import Job, JobStatus
+
+        mock_store = MagicMock()
+        mock_store.create_job.return_value = Job(
+            job_id="opt-test-1",
+            status=JobStatus.PENDING,
+            playbook="test.yml",
+            extra_vars={},
+            inventory="localhost,",
+            created_at=datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
+            options={"check": True, "tags": ["deploy"]},
+        )
+        mock_redis_inst = MagicMock()
+
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.enqueue_job") as mock_enqueue:
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={
+                            "playbook": "test.yml",
+                            "options": {"check": True, "tags": ["deploy"]},
+                        },
+                    )
+
+            assert response.status_code == 202
+
+            # Verify options were serialized (exclude_defaults) and passed through
+            create_kwargs = mock_store.create_job.call_args[1]
+            assert create_kwargs["options"]["check"] is True
+            assert create_kwargs["options"]["tags"] == ["deploy"]
+
+            enqueue_kwargs = mock_enqueue.call_args[1]
+            assert enqueue_kwargs["options"]["check"] is True
+            assert enqueue_kwargs["options"]["tags"] == ["deploy"]
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_string_inventory_still_works(self, playbooks_dir: Path):
+        """Legacy string inventory still passes through correctly."""
+        from ansible_runner_service.job_store import Job, JobStatus
+
+        mock_store = MagicMock()
+        mock_store.create_job.return_value = Job(
+            job_id="str-inv-test-1",
+            status=JobStatus.PENDING,
+            playbook="test.yml",
+            extra_vars={},
+            inventory="myhost,",
+            created_at=datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        mock_redis_inst = MagicMock()
+
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+        app.dependency_overrides[get_job_store] = lambda: mock_store
+        app.dependency_overrides[get_redis] = lambda: mock_redis_inst
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("ansible_runner_service.main.enqueue_job") as mock_enqueue:
+                    response = await client.post(
+                        "/api/v1/jobs",
+                        json={
+                            "playbook": "test.yml",
+                            "inventory": "myhost,",
+                        },
+                    )
+
+            assert response.status_code == 202
+
+            # Verify string inventory passed through as-is
+            create_kwargs = mock_store.create_job.call_args[1]
+            assert create_kwargs["inventory"] == "myhost,"
+
+            enqueue_kwargs = mock_enqueue.call_args[1]
+            assert enqueue_kwargs["inventory"] == "myhost,"
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_sync_with_inline_inventory_supported(self, playbooks_dir: Path):
+        """Sync mode supports inline inventory."""
+        (playbooks_dir / "test.yml").write_text(
+            "---\n"
+            "- hosts: all\n"
+            "  connection: local\n"
+            "  gather_facts: false\n"
+            "  tasks:\n"
+            "    - name: Debug\n"
+            "      ansible.builtin.debug:\n"
+            "        msg: 'Hello from inline inventory'\n"
+        )
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/jobs?sync=true",
+                    json={
+                        "playbook": "test.yml",
+                        "inventory": {
+                            "type": "inline",
+                            "data": {"all": {"hosts": {"localhost": None}}},
+                        },
+                    },
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "successful"
+            assert "Hello from inline inventory" in data["stdout"]
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_sync_with_git_inventory_rejected(self, playbooks_dir: Path):
+        """Sync mode rejects git inventory with 400."""
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/jobs?sync=true",
+                    json={
+                        "playbook": "test.yml",
+                        "inventory": {
+                            "type": "git",
+                            "repo": "https://dev.azure.com/org/project/_git/inventory",
+                            "path": "hosts.yml",
+                        },
+                    },
+                )
+
+            assert response.status_code == 400
+            assert "git inventory" in response.json()["detail"].lower()
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_invalid_inventory_type_rejected(self, playbooks_dir: Path):
+        """Invalid inventory type should be rejected by Pydantic validation."""
+        (playbooks_dir / "test.yml").write_text("---\n- hosts: all\n  tasks: []")
+
+        app.dependency_overrides[get_playbooks_dir] = lambda: playbooks_dir
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/jobs",
+                    json={
+                        "playbook": "test.yml",
+                        "inventory": {"type": "invalid"},
+                    },
+                )
+
+            assert response.status_code == 422
         finally:
             app.dependency_overrides.clear()

@@ -32,7 +32,7 @@ class Job:
     status: JobStatus
     playbook: str
     extra_vars: dict[str, Any]
-    inventory: str
+    inventory: str | dict
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -41,6 +41,7 @@ class Job:
     source_type: str = "local"
     source_repo: str | None = None
     source_branch: str | None = None
+    options: dict | None = None
 
 
 class JobStore:
@@ -61,10 +62,11 @@ class JobStore:
         self,
         playbook: str,
         extra_vars: dict[str, Any],
-        inventory: str,
+        inventory: str | dict,
         source_type: str = "local",
         source_repo: str | None = None,
         source_branch: str | None = None,
+        options: dict | None = None,
     ) -> Job:
         job = Job(
             job_id=str(uuid.uuid4()),
@@ -76,6 +78,7 @@ class JobStore:
             source_type=source_type,
             source_repo=source_repo,
             source_branch=source_branch,
+            options=options,
         )
         self._save_job(job)
 
@@ -91,6 +94,7 @@ class JobStore:
                     source_type=source_type,
                     source_repo=source_repo,
                     source_branch=source_branch,
+                    options=options,
                 )
             except Exception:
                 # Rollback Redis on DB failure for strict consistency
@@ -145,7 +149,7 @@ class JobStore:
             "status": job.status.value,
             "playbook": job.playbook,
             "extra_vars": json.dumps(job.extra_vars),
-            "inventory": job.inventory,
+            "inventory": json.dumps(job.inventory) if isinstance(job.inventory, dict) else job.inventory,
             "created_at": job.created_at.isoformat(),
             "started_at": job.started_at.isoformat() if job.started_at else "",
             "finished_at": job.finished_at.isoformat() if job.finished_at else "",
@@ -154,6 +158,7 @@ class JobStore:
             "source_type": job.source_type,
             "source_repo": job.source_repo or "",
             "source_branch": job.source_branch or "",
+            "options": json.dumps(job.options) if job.options else "",
         }
         self.redis.hset(self._job_key(job.job_id), mapping=data)
         self.redis.expire(self._job_key(job.job_id), self.ttl)
@@ -171,12 +176,21 @@ class JobStore:
         started_str = get_str("started_at")
         finished_str = get_str("finished_at")
 
+        inv_str = get_str("inventory")
+        try:
+            inventory = json.loads(inv_str)
+        except (json.JSONDecodeError, ValueError):
+            inventory = inv_str
+
+        options_str = get_str("options")
+        options = json.loads(options_str) if options_str else None
+
         return Job(
             job_id=get_str("job_id"),
             status=JobStatus(get_str("status")),
             playbook=get_str("playbook"),
             extra_vars=json.loads(get_str("extra_vars")),
-            inventory=get_str("inventory"),
+            inventory=inventory,
             created_at=datetime.fromisoformat(get_str("created_at")),
             started_at=datetime.fromisoformat(started_str) if started_str else None,
             finished_at=datetime.fromisoformat(finished_str) if finished_str else None,
@@ -185,4 +199,5 @@ class JobStore:
             source_type=get_str("source_type") or "local",
             source_repo=get_str("source_repo") or None,
             source_branch=get_str("source_branch") or None,
+            options=options,
         )
