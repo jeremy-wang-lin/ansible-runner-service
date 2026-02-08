@@ -71,7 +71,7 @@ Execute a playbook and wait for the result:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
   -H "Content-Type: application/json" \
-  -d '{"playbook": "hello.yml"}'
+  -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
 ```
 
 Response (200 OK):
@@ -91,7 +91,7 @@ Submit a job to the queue:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
-  -d '{"playbook": "hello.yml"}'
+  -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
 ```
 
 Response (202 Accepted):
@@ -134,10 +134,11 @@ Not all combinations of source and inventory types are supported in sync mode:
 | Source | String Inventory | Inline Inventory | Git Inventory |
 |--------|------------------|------------------|---------------|
 | Local playbook | Sync / Async | Sync / Async | Async only |
+| Local role | Sync / Async | Sync / Async | Async only |
 | Git playbook | Async only | Async only | Async only |
 | Git role | Async only | Async only | Async only |
 
-**Rule of thumb:** Sync mode works when everything is local (local playbook + string/inline inventory). Git sources require async mode due to unpredictable clone/install latency.
+**Rule of thumb:** Sync mode works when everything is local (local playbook/role + string/inline inventory). Git sources require async mode due to unpredictable clone/install latency.
 
 ### With Extra Variables
 
@@ -145,11 +146,32 @@ Not all combinations of source and inventory types are supported in sync mode:
 curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "hello.yml",
+    "source": {"type": "local", "target": "playbook", "path": "hello.yml"},
     "extra_vars": {"name": "Claude"},
     "inventory": "localhost,"
   }'
 ```
+
+### Local Role Source
+
+Execute an Ansible role from a bundled collection (sync or async):
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "type": "local",
+      "target": "role",
+      "collection": "mycompany.infra",
+      "role": "nginx",
+      "role_vars": {"nginx_port": 8080}
+    },
+    "inventory": "webservers,"
+  }'
+```
+
+Local roles run from collections installed in `/app/collections/` (for Kubernetes deployments) or the default Ansible collections path. The `collection` field is the fully-qualified collection name (e.g., `mycompany.infra`), and `role` is the role name within that collection.
 
 ### Git Playbook Source
 
@@ -160,7 +182,8 @@ curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
     "source": {
-      "type": "playbook",
+      "type": "git",
+      "target": "playbook",
       "repo": "https://dev.azure.com/xxxit/project/_git/ansible-playbooks",
       "branch": "main",
       "path": "deploy/app.yml"
@@ -172,14 +195,15 @@ curl -X POST "http://localhost:8000/api/v1/jobs" \
 
 ### Git Role Source
 
-Execute an Ansible role from a collection in a Git repository:
+Execute an Ansible role from a collection in a Git repository (async only):
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
     "source": {
-      "type": "role",
+      "type": "git",
+      "target": "role",
       "repo": "https://gitlab.company.com/platform-team/ansible-collection.git",
       "branch": "v2.0.0",
       "role": "nginx",
@@ -203,7 +227,7 @@ Simple comma-separated host list (Ansible native format):
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "deploy.yml",
+    "source": {"type": "local", "target": "playbook", "path": "deploy.yml"},
     "inventory": "web1.example.com,web2.example.com,"
   }'
 ```
@@ -216,7 +240,7 @@ Standard Ansible YAML inventory structure passed as JSON. This mirrors the forma
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "deploy.yml",
+    "source": {"type": "local", "target": "playbook", "path": "deploy.yml"},
     "inventory": {
       "type": "inline",
       "data": {
@@ -249,7 +273,7 @@ Fetch inventory from a Git repository:
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "deploy.yml",
+    "source": {"type": "local", "target": "playbook", "path": "deploy.yml"},
     "inventory": {
       "type": "git",
       "repo": "https://dev.azure.com/org/project/_git/inventory",
@@ -274,7 +298,7 @@ The `options` field controls how Ansible executes the playbook:
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "deploy.yml",
+    "source": {"type": "local", "target": "playbook", "path": "deploy.yml"},
     "inventory": "localhost,",
     "options": {
       "check": true,
@@ -339,19 +363,39 @@ Complete list of fields accepted by `POST /api/v1/jobs`:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `playbook` | string | Yes* | - | Local playbook filename (e.g., `hello.yml`) |
-| `source` | object | Yes* | - | Git source for playbook or role |
+| `source` | object | Yes | - | Source definition (local/git playbook or role) |
 | `extra_vars` | object | No | `{}` | Variables passed to the playbook |
 | `inventory` | string or object | No | `"localhost,"` | Target hosts (string, inline, or git) |
 | `options` | object | No | `{}` | Execution options (check, tags, etc.) |
 
-*Either `playbook` or `source` is required, but not both.
+### Source Object (Local Playbook)
+
+```json
+{
+  "type": "local",
+  "target": "playbook",
+  "path": "deploy/app.yml"
+}
+```
+
+### Source Object (Local Role)
+
+```json
+{
+  "type": "local",
+  "target": "role",
+  "collection": "mycompany.infra",
+  "role": "nginx",
+  "role_vars": {"nginx_port": 8080}
+}
+```
 
 ### Source Object (Git Playbook)
 
 ```json
 {
-  "type": "playbook",
+  "type": "git",
+  "target": "playbook",
   "repo": "https://dev.azure.com/org/project/_git/repo",
   "branch": "main",
   "path": "deploy/app.yml"
@@ -362,7 +406,8 @@ Complete list of fields accepted by `POST /api/v1/jobs`:
 
 ```json
 {
-  "type": "role",
+  "type": "git",
+  "target": "role",
   "repo": "https://gitlab.company.com/team/collection.git",
   "branch": "v2.0.0",
   "role": "nginx",
