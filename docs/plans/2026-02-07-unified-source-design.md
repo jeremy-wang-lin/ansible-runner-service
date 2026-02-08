@@ -1,5 +1,7 @@
 # Unified Source Field Design
 
+> **Status:** ✅ Implemented in `feature/unified-source` branch (2026-02-08)
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Unify `playbook` and `source` fields into a single `source` field that handles local and git sources for both playbooks and roles.
