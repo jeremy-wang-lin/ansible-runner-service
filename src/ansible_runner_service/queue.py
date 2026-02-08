@@ -4,7 +4,7 @@ from typing import Any
 from redis import Redis
 from rq import Queue
 
-from ansible_runner_service.schemas import SourceConfig
+from ansible_runner_service.schemas import UnifiedSourceConfig
 
 
 def get_queue(redis: Redis) -> Queue:
@@ -16,7 +16,7 @@ def enqueue_job(
     playbook: str,
     extra_vars: dict[str, Any],
     inventory: str | dict,
-    source_config: SourceConfig | None = None,
+    source_config: UnifiedSourceConfig | None = None,
     options: dict | None = None,
     redis: Redis | None = None,
 ) -> None:

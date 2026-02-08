@@ -4,25 +4,7 @@ from typing import Any, Annotated, Literal, TypedDict, Union
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator, model_validator
 
 
-class PlaybookSourceConfig(TypedDict):
-    type: Literal["playbook"]
-    repo: str
-    branch: str
-    path: str
-
-
-class RoleSourceConfig(TypedDict):
-    type: Literal["role"]
-    repo: str
-    branch: str
-    role: str
-    role_vars: dict[str, Any]
-
-
-SourceConfig = PlaybookSourceConfig | RoleSourceConfig
-
-
-# New unified source configs for queue serialization
+# Unified source configs for queue serialization
 class LocalPlaybookSourceConfig(TypedDict):
     type: Literal["local"]
     target: Literal["playbook"]
