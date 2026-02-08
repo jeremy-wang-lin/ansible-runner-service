@@ -64,3 +64,32 @@ class TestJobModelSourceFields:
         assert job.source_type == "local"
         assert job.source_repo is None
         assert job.source_branch is None
+
+
+def test_job_model_has_source_target():
+    from ansible_runner_service.models import JobModel
+
+    job = JobModel(
+        id="test-123",
+        status="pending",
+        playbook="hello.yml",
+        inventory="localhost,",
+        created_at=datetime.now(timezone.utc),
+        source_type="local",
+        source_target="playbook",
+    )
+    assert job.source_target == "playbook"
+
+
+def test_job_model_source_target_defaults():
+    from ansible_runner_service.models import JobModel
+
+    job = JobModel(
+        id="test-123",
+        status="pending",
+        playbook="hello.yml",
+        inventory="localhost,",
+        created_at=datetime.now(timezone.utc),
+    )
+    assert job.source_type == "local"
+    assert job.source_target == "playbook"
