@@ -15,6 +15,8 @@ from ansible_runner_service.job_store import JobStore
 from ansible_runner_service.queue import enqueue_job
 from ansible_runner_service.runner import run_playbook
 from ansible_runner_service.schemas import (
+    LocalPlaybookSource,
+    LocalRoleSource,
     GitPlaybookSource,
     GitRoleSource,
     GitInventory,
@@ -26,10 +28,13 @@ from ansible_runner_service.schemas import (
     JobResultSchema,
     JobSummary,
     JobListResponse,
-    PlaybookSourceConfig,
-    RoleSourceConfig,
-    SourceConfig,
+    LocalPlaybookSourceConfig,
+    LocalRoleSourceConfig,
+    GitPlaybookSourceConfig,
+    GitRoleSourceConfig,
+    UnifiedSourceConfig,
 )
+from ansible_runner_service.git_service import generate_role_wrapper_playbook
 from ansible_runner_service.repository import JobRepository
 from ansible_runner_service.database import get_engine, get_session
 
@@ -88,10 +93,15 @@ app = FastAPI(title="Ansible Runner Service", lifespan=lifespan)
 
 
 PLAYBOOKS_DIR = Path(__file__).parent.parent.parent / "playbooks"
+COLLECTIONS_DIR = Path(__file__).parent.parent.parent / "collections"
 
 
 def get_playbooks_dir() -> Path:
     return PLAYBOOKS_DIR
+
+
+def get_collections_dir() -> Path:
+    return COLLECTIONS_DIR
 
 
 def get_job_store():
@@ -126,84 +136,79 @@ def submit_job(
     request: JobRequest,
     sync: bool = Query(default=False, description="Run synchronously"),
     playbooks_dir: Path = Depends(get_playbooks_dir),
+    collections_dir: Path = Depends(get_collections_dir),
     job_store: JobStore = Depends(get_job_store),
     redis: Redis = Depends(get_redis),
 ) -> Union[JobSubmitResponse, JobResponse]:
-    """Submit a playbook job for execution."""
-    if request.source:
-        return _handle_git_source(request, sync, job_store, redis)
-    else:
-        return _handle_local_source(request, sync, playbooks_dir, job_store, redis)
+    """Submit a job for execution."""
+    source = request.source
 
-
-def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
-    """Handle legacy local playbook source."""
-    # Block path traversal attempts
-    if ".." in request.playbook or request.playbook.startswith("/"):
-        raise HTTPException(status_code=400, detail="Invalid playbook name")
-
-    playbook_path = playbooks_dir / request.playbook
-
-    if not playbook_path.exists():
-        raise HTTPException(
-            status_code=404, detail=f"Playbook not found: {request.playbook}"
-        )
-
-    # Serialize inventory for storage/queue
-    inventory = request.inventory
-    if not isinstance(inventory, str):
-        inventory = inventory.model_dump()
-
-    # Serialize options (exclude defaults for compact storage)
-    options = request.options.model_dump(exclude_defaults=True) or None
-
+    # Validate sync mode constraints
     if sync:
-        # Git inventory requires clone - not supported in sync mode
+        if source.type == "git":
+            raise HTTPException(
+                status_code=400,
+                detail="Sync mode not supported for git sources. Use async mode.",
+            )
         if isinstance(request.inventory, GitInventory):
             raise HTTPException(
                 status_code=400,
                 detail="Sync mode does not support git inventory. Use async mode.",
             )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Resolve inventory to string or file path
-            if isinstance(request.inventory, str):
-                resolved_inventory = request.inventory
-            else:  # InlineInventory
-                inv_path = os.path.join(tmpdir, "inventory.yml")
-                with open(inv_path, "w") as f:
-                    yaml.dump(request.inventory.data, f, default_flow_style=False)
-                resolved_inventory = inv_path
+    # Validate git repo if applicable
+    if source.type == "git":
+        providers = load_providers()
+        try:
+            validate_repo_url(source.repo, providers)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
-            result = run_playbook(
-                playbook=request.playbook,
-                extra_vars=request.extra_vars,
-                inventory=resolved_inventory,
-                playbooks_dir=playbooks_dir,
-                options=options,
-            )
-        return JSONResponse(
-            status_code=200,
-            content=JobResponse(
-                status=result.status,
-                rc=result.rc,
-                stdout=result.stdout,
-                stats=result.stats,
-            ).model_dump(),
+    # Determine playbook name for storage
+    if source.target == "playbook":
+        playbook_name = source.path
+    else:  # role
+        playbook_name = source.role
+
+    # Build source_config for queue
+    source_config = _build_source_config(source)
+
+    # Serialize inventory
+    inventory = request.inventory
+    if not isinstance(inventory, str):
+        inventory = inventory.model_dump()
+
+    # Serialize options
+    options = request.options.model_dump(exclude_defaults=True) or None
+
+    if sync:
+        return _execute_sync(
+            source=source,
+            extra_vars=request.extra_vars,
+            inventory=request.inventory,
+            options=options,
+            playbooks_dir=playbooks_dir,
+            collections_dir=collections_dir,
         )
 
+    # Async mode
     job = job_store.create_job(
-        playbook=request.playbook,
+        playbook=playbook_name,
         extra_vars=request.extra_vars,
         inventory=inventory,
+        source_type=source.type,
+        source_target=source.target,
+        source_repo=getattr(source, "repo", None),
+        source_branch=getattr(source, "branch", None),
         options=options,
     )
 
     enqueue_job(
         job_id=job.job_id,
-        playbook=request.playbook,
+        playbook=playbook_name,
         extra_vars=request.extra_vars,
         inventory=inventory,
+        source_config=source_config,
         options=options,
         redis=redis,
     )
@@ -218,81 +223,103 @@ def _handle_local_source(request, sync, playbooks_dir, job_store, redis):
     )
 
 
-def _handle_git_source(request, sync, job_store, redis):
-    """Handle Git playbook/role source."""
-    source = request.source
-
-    # Validate repo URL against allowed providers
-    providers = load_providers()
-    try:
-        validate_repo_url(source.repo, providers)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Determine playbook name and source_config for the queue.
-    # Note: the `playbook` field stores the role name for role sources.
-    # Use `source_type` column to disambiguate in queries.
-    source_config: SourceConfig
-    if isinstance(source, GitPlaybookSource):
-        playbook = source.path
-        source_config = PlaybookSourceConfig(
-            type="playbook",
+def _build_source_config(source) -> UnifiedSourceConfig:
+    """Build TypedDict source config for queue serialization."""
+    if isinstance(source, LocalPlaybookSource):
+        return LocalPlaybookSourceConfig(
+            type="local",
+            target="playbook",
+            path=source.path,
+        )
+    elif isinstance(source, LocalRoleSource):
+        return LocalRoleSourceConfig(
+            type="local",
+            target="role",
+            collection=source.collection,
+            role=source.role,
+            role_vars=source.role_vars,
+        )
+    elif isinstance(source, GitPlaybookSource):
+        return GitPlaybookSourceConfig(
+            type="git",
+            target="playbook",
             repo=source.repo,
             branch=source.branch,
             path=source.path,
         )
     elif isinstance(source, GitRoleSource):
-        playbook = source.role
-        source_config = RoleSourceConfig(
-            type="role",
+        return GitRoleSourceConfig(
+            type="git",
+            target="role",
             repo=source.repo,
             branch=source.branch,
             role=source.role,
             role_vars=source.role_vars,
         )
     else:
-        raise HTTPException(status_code=400, detail="Unknown source type")
+        raise ValueError(f"Unknown source type: {type(source)}")
 
-    # Serialize inventory for storage/queue
-    inventory = request.inventory
-    if not isinstance(inventory, str):
-        inventory = inventory.model_dump()
 
-    # Serialize options (exclude defaults for compact storage)
-    options = request.options.model_dump(exclude_defaults=True) or None
+def _execute_sync(
+    source,
+    extra_vars: dict,
+    inventory,
+    options: dict | None,
+    playbooks_dir: Path,
+    collections_dir: Path,
+) -> JSONResponse:
+    """Execute job synchronously - only for local sources with string/inline inventory."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Resolve inventory
+        if isinstance(inventory, str):
+            resolved_inventory = inventory
+        else:  # InlineInventory
+            inv_path = os.path.join(tmpdir, "inventory.yml")
+            with open(inv_path, "w") as f:
+                yaml.dump(inventory.data, f, default_flow_style=False)
+            resolved_inventory = inv_path
 
-    if sync:
-        raise HTTPException(
-            status_code=400,
-            detail="Sync mode not supported for Git sources. Use async mode.",
-        )
+        if isinstance(source, LocalPlaybookSource):
+            # Validate path
+            if ".." in source.path or source.path.startswith("/"):
+                raise HTTPException(status_code=400, detail="Invalid playbook path")
 
-    job = job_store.create_job(
-        playbook=playbook,
-        extra_vars=request.extra_vars,
-        inventory=inventory,
-        source_type=source.type,
-        source_repo=source.repo,
-        source_branch=source.branch,
-        options=options,
-    )
+            playbook_path = playbooks_dir / source.path
+            if not playbook_path.exists():
+                raise HTTPException(status_code=404, detail=f"Playbook not found: {source.path}")
 
-    enqueue_job(
-        job_id=job.job_id,
-        playbook=playbook,
-        extra_vars=request.extra_vars,
-        inventory=inventory,
-        source_config=source_config,
-        options=options,
-        redis=redis,
-    )
+            result = run_playbook(
+                playbook=source.path,
+                extra_vars=extra_vars,
+                inventory=resolved_inventory,
+                playbooks_dir=playbooks_dir,
+                options=options,
+            )
+        elif isinstance(source, LocalRoleSource):
+            # Generate wrapper playbook for local role
+            fqcn = f"{source.collection}.{source.role}"
+            wrapper_content = generate_role_wrapper_playbook(fqcn=fqcn, role_vars=source.role_vars)
+            wrapper_path = os.path.join(tmpdir, "wrapper_playbook.yml")
+            with open(wrapper_path, "w") as f:
+                f.write(wrapper_content)
+
+            result = run_playbook(
+                playbook=wrapper_path,
+                extra_vars=extra_vars,
+                inventory=resolved_inventory,
+                envvars={"ANSIBLE_COLLECTIONS_PATH": str(collections_dir)},
+                options=options,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Sync mode only supports local sources")
 
     return JSONResponse(
-        status_code=202,
-        content=JobSubmitResponse(
-            job_id=job.job_id,
-            status=job.status.value,
-            created_at=job.created_at.isoformat(),
+        status_code=200,
+        content=JobResponse(
+            status=result.status,
+            rc=result.rc,
+            stdout=result.stdout,
+            stats=result.stats,
         ).model_dump(),
     )
 
