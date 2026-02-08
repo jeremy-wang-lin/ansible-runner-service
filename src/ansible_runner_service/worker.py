@@ -42,6 +42,13 @@ def get_playbooks_dir() -> Path:
     return Path(__file__).parent.parent.parent / "playbooks"
 
 
+COLLECTIONS_DIR = Path(__file__).parent.parent.parent / "collections"
+
+
+def get_collections_dir() -> Path:
+    return COLLECTIONS_DIR
+
+
 def _resolve_inventory(inventory, tmpdir):
     """Resolve inventory to a string or file path for ansible-runner."""
     if isinstance(inventory, str):
@@ -159,6 +166,28 @@ def _execute_git_role(source_config: RoleSourceConfig, extra_vars, inventory, op
         )
 
 
+def _execute_local_role(source_config, extra_vars, inventory, options=None):
+    """Execute a local role from bundled collections."""
+    collections_dir = get_collections_dir()
+
+    fqcn = f"{source_config['collection']}.{source_config['role']}"
+    role_vars = source_config.get("role_vars", {})
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wrapper_content = generate_role_wrapper_playbook(fqcn=fqcn, role_vars=role_vars)
+        wrapper_path = os.path.join(tmpdir, "wrapper_playbook.yml")
+        with open(wrapper_path, "w") as f:
+            f.write(wrapper_content)
+
+        return run_playbook(
+            playbook=wrapper_path,
+            extra_vars=extra_vars,
+            inventory=inventory,
+            envvars={"ANSIBLE_COLLECTIONS_PATH": str(collections_dir)},
+            options=options,
+        )
+
+
 def execute_job(
     job_id: str,
     playbook: str,
@@ -188,13 +217,18 @@ def execute_job(
                 resolved_inventory = _resolve_inventory(inventory, inv_tmpdir)
 
                 if source_config is None:
+                    # Legacy: no source_config means old local playbook
                     result = _execute_local(playbook, extra_vars, resolved_inventory, options)
-                elif source_config["type"] == "playbook":
+                elif source_config["type"] == "local" and source_config["target"] == "playbook":
+                    result = _execute_local(source_config["path"], extra_vars, resolved_inventory, options)
+                elif source_config["type"] == "local" and source_config["target"] == "role":
+                    result = _execute_local_role(source_config, extra_vars, resolved_inventory, options)
+                elif source_config["type"] == "git" and source_config["target"] == "playbook":
                     result = _execute_git_playbook(source_config, extra_vars, resolved_inventory, options)
-                elif source_config["type"] == "role":
+                elif source_config["type"] == "git" and source_config["target"] == "role":
                     result = _execute_git_role(source_config, extra_vars, resolved_inventory, options)
                 else:
-                    raise ValueError(f"Unknown source type: {source_config['type']}")
+                    raise ValueError(f"Unknown source config: {source_config}")
 
             job_result = JobResult(
                 rc=result.rc,
