@@ -18,23 +18,24 @@ from ansible_runner_service.schemas import (
 
 class TestJobRequest:
     def test_minimal_request(self):
-        req = JobRequest(playbook="hello.yml")
-        assert req.playbook == "hello.yml"
+        req = JobRequest(source={"type": "local", "target": "playbook", "path": "hello.yml"})
+        assert req.source.path == "hello.yml"
         assert req.extra_vars == {}
         assert req.inventory == "localhost,"
 
     def test_full_request(self):
         req = JobRequest(
-            playbook="hello.yml",
+            source={"type": "local", "target": "playbook", "path": "hello.yml"},
             extra_vars={"name": "World"},
             inventory="myhost,",
         )
         assert req.extra_vars == {"name": "World"}
         assert req.inventory == "myhost,"
 
-    def test_empty_playbook_rejected(self):
+    def test_empty_path_rejected(self):
+        # Empty path in local playbook source should be rejected
         with pytest.raises(ValidationError):
-            JobRequest(playbook="")
+            JobRequest(source={"type": "local", "target": "playbook", "path": ""})
 
 
 class TestJobResponse:
@@ -125,16 +126,19 @@ class TestJobListResponse:
 class TestGitPlaybookSource:
     def test_minimal_source(self):
         source = GitPlaybookSource(
-            type="playbook",
+            type="git",
+            target="playbook",
             repo="https://dev.azure.com/xxxit/project/_git/repo",
             path="deploy/app.yml",
         )
-        assert source.type == "playbook"
+        assert source.type == "git"
+        assert source.target == "playbook"
         assert source.branch == "main"  # default
 
     def test_with_branch(self):
         source = GitPlaybookSource(
-            type="playbook",
+            type="git",
+            target="playbook",
             repo="https://dev.azure.com/xxxit/project/_git/repo",
             branch="v2.0.0",
             path="deploy/app.yml",
@@ -144,7 +148,8 @@ class TestGitPlaybookSource:
     def test_path_traversal_rejected(self):
         with pytest.raises(ValueError):
             GitPlaybookSource(
-                type="playbook",
+                type="git",
+                target="playbook",
                 repo="https://dev.azure.com/xxxit/project/_git/repo",
                 path="../../../etc/passwd",
             )
@@ -152,7 +157,8 @@ class TestGitPlaybookSource:
     def test_absolute_path_rejected(self):
         with pytest.raises(ValueError):
             GitPlaybookSource(
-                type="playbook",
+                type="git",
+                target="playbook",
                 repo="https://dev.azure.com/xxxit/project/_git/repo",
                 path="/etc/passwd",
             )
@@ -161,17 +167,20 @@ class TestGitPlaybookSource:
 class TestGitRoleSource:
     def test_minimal_source(self):
         source = GitRoleSource(
-            type="role",
+            type="git",
+            target="role",
             repo="https://gitlab.company.com/platform-team/collection.git",
             role="nginx",
         )
-        assert source.type == "role"
+        assert source.type == "git"
+        assert source.target == "role"
         assert source.branch == "main"
         assert source.role_vars == {}
 
     def test_with_role_vars(self):
         source = GitRoleSource(
-            type="role",
+            type="git",
+            target="role",
             repo="https://gitlab.company.com/platform-team/collection.git",
             role="nginx",
             role_vars={"nginx_port": 8080},
@@ -180,59 +189,67 @@ class TestGitRoleSource:
 
     def test_fqcn_role(self):
         source = GitRoleSource(
-            type="role",
+            type="git",
+            target="role",
             repo="https://gitlab.company.com/platform-team/collection.git",
             role="mycompany.infra.nginx",
         )
         assert source.role == "mycompany.infra.nginx"
 
 
-class TestJobRequestBackwardCompatibility:
-    def test_legacy_local_playbook(self):
-        """Existing format still works."""
-        request = JobRequest(playbook="hello.yml")
-        assert request.playbook == "hello.yml"
-        assert request.source is None
+class TestUnifiedSourceTypes:
+    def test_local_playbook_source(self):
+        """Local playbook source works."""
+        request = JobRequest(
+            source={"type": "local", "target": "playbook", "path": "hello.yml"}
+        )
+        assert request.source.type == "local"
+        assert request.source.target == "playbook"
+        assert request.source.path == "hello.yml"
 
     def test_git_playbook_source(self):
         request = JobRequest(
             source={
-                "type": "playbook",
+                "type": "git",
+                "target": "playbook",
                 "repo": "https://dev.azure.com/xxxit/p/_git/r",
                 "path": "deploy.yml",
             },
         )
         assert request.source is not None
-        assert request.source.type == "playbook"
-        assert request.playbook is None
+        assert request.source.type == "git"
+        assert request.source.target == "playbook"
 
     def test_git_role_source(self):
         request = JobRequest(
             source={
-                "type": "role",
+                "type": "git",
+                "target": "role",
                 "repo": "https://gitlab.company.com/team/col.git",
                 "role": "nginx",
             },
         )
         assert request.source is not None
-        assert request.source.type == "role"
+        assert request.source.type == "git"
+        assert request.source.target == "role"
 
-    def test_must_provide_playbook_or_source(self):
-        """Either playbook or source required."""
-        with pytest.raises(ValueError, match="playbook.*source"):
+    def test_local_role_source(self):
+        request = JobRequest(
+            source={
+                "type": "local",
+                "target": "role",
+                "collection": "mycompany.infra",
+                "role": "nginx",
+            },
+        )
+        assert request.source is not None
+        assert request.source.type == "local"
+        assert request.source.target == "role"
+
+    def test_source_required(self):
+        """Source is required."""
+        with pytest.raises(ValidationError):
             JobRequest()
-
-    def test_cannot_provide_both(self):
-        """Cannot provide both playbook and source."""
-        with pytest.raises(ValueError, match="playbook.*source"):
-            JobRequest(
-                playbook="hello.yml",
-                source={
-                    "type": "playbook",
-                    "repo": "https://dev.azure.com/xxxit/p/_git/r",
-                    "path": "deploy.yml",
-                },
-            )
 
 
 class TestInlineInventory:
@@ -315,12 +332,15 @@ class TestExecutionOptions:
 
 class TestJobRequestInventoryTypes:
     def test_string_inventory_still_works(self):
-        req = JobRequest(playbook="hello.yml", inventory="myhost,")
+        req = JobRequest(
+            source={"type": "local", "target": "playbook", "path": "hello.yml"},
+            inventory="myhost,",
+        )
         assert req.inventory == "myhost,"
 
     def test_inline_inventory(self):
         req = JobRequest(
-            playbook="hello.yml",
+            source={"type": "local", "target": "playbook", "path": "hello.yml"},
             inventory={
                 "type": "inline",
                 "data": {"webservers": {"hosts": {"10.0.1.10": None}}},
@@ -331,7 +351,7 @@ class TestJobRequestInventoryTypes:
 
     def test_git_inventory(self):
         req = JobRequest(
-            playbook="hello.yml",
+            source={"type": "local", "target": "playbook", "path": "hello.yml"},
             inventory={
                 "type": "git",
                 "repo": "https://dev.azure.com/org/project/_git/inv",
@@ -344,23 +364,127 @@ class TestJobRequestInventoryTypes:
     def test_invalid_inventory_type_rejected(self):
         with pytest.raises(ValidationError):
             JobRequest(
-                playbook="hello.yml",
+                source={"type": "local", "target": "playbook", "path": "hello.yml"},
                 inventory={"type": "unknown", "data": {}},
             )
 
     def test_default_inventory_unchanged(self):
-        req = JobRequest(playbook="hello.yml")
+        req = JobRequest(source={"type": "local", "target": "playbook", "path": "hello.yml"})
         assert req.inventory == "localhost,"
 
     def test_options_default(self):
-        req = JobRequest(playbook="hello.yml")
+        req = JobRequest(source={"type": "local", "target": "playbook", "path": "hello.yml"})
         assert req.options.check is False
         assert req.options.verbosity == 0
 
     def test_options_provided(self):
         req = JobRequest(
-            playbook="hello.yml",
+            source={"type": "local", "target": "playbook", "path": "hello.yml"},
             options={"check": True, "tags": ["deploy"]},
         )
         assert req.options.check is True
         assert req.options.tags == ["deploy"]
+
+
+class TestLocalPlaybookSource:
+    def test_minimal_source(self):
+        from ansible_runner_service.schemas import LocalPlaybookSource
+        source = LocalPlaybookSource(
+            type="local",
+            target="playbook",
+            path="hello.yml",
+        )
+        assert source.type == "local"
+        assert source.target == "playbook"
+        assert source.path == "hello.yml"
+
+    def test_path_traversal_rejected(self):
+        from ansible_runner_service.schemas import LocalPlaybookSource
+        with pytest.raises(ValueError):
+            LocalPlaybookSource(
+                type="local",
+                target="playbook",
+                path="../../../etc/passwd",
+            )
+
+    def test_absolute_path_rejected(self):
+        from ansible_runner_service.schemas import LocalPlaybookSource
+        with pytest.raises(ValueError):
+            LocalPlaybookSource(
+                type="local",
+                target="playbook",
+                path="/etc/passwd",
+            )
+
+
+class TestLocalRoleSource:
+    def test_minimal_source(self):
+        from ansible_runner_service.schemas import LocalRoleSource
+        source = LocalRoleSource(
+            type="local",
+            target="role",
+            collection="mycompany.infra",
+            role="nginx",
+        )
+        assert source.type == "local"
+        assert source.target == "role"
+        assert source.collection == "mycompany.infra"
+        assert source.role == "nginx"
+        assert source.role_vars == {}
+
+    def test_with_role_vars(self):
+        from ansible_runner_service.schemas import LocalRoleSource
+        source = LocalRoleSource(
+            type="local",
+            target="role",
+            collection="mycompany.infra",
+            role="nginx",
+            role_vars={"port": 8080},
+        )
+        assert source.role_vars == {"port": 8080}
+
+
+class TestUnifiedSourceDiscriminator:
+    def test_local_playbook_discriminated(self):
+        from ansible_runner_service.schemas import JobRequest
+        req = JobRequest(
+            source={"type": "local", "target": "playbook", "path": "hello.yml"},
+        )
+        assert req.source.type == "local"
+        assert req.source.target == "playbook"
+
+    def test_local_role_discriminated(self):
+        from ansible_runner_service.schemas import JobRequest
+        req = JobRequest(
+            source={"type": "local", "target": "role", "collection": "mycompany.infra", "role": "nginx"},
+        )
+        assert req.source.type == "local"
+        assert req.source.target == "role"
+
+    def test_git_playbook_discriminated(self):
+        from ansible_runner_service.schemas import JobRequest
+        req = JobRequest(
+            source={"type": "git", "target": "playbook", "repo": "https://dev.azure.com/org/p/_git/r", "path": "deploy.yml"},
+        )
+        assert req.source.type == "git"
+        assert req.source.target == "playbook"
+
+    def test_git_role_discriminated(self):
+        from ansible_runner_service.schemas import JobRequest
+        req = JobRequest(
+            source={"type": "git", "target": "role", "repo": "https://gitlab.com/org/col.git", "role": "nginx"},
+        )
+        assert req.source.type == "git"
+        assert req.source.target == "role"
+
+
+class TestJobRequestUnifiedSource:
+    def test_source_required(self):
+        """Source is now required (no playbook field)."""
+        with pytest.raises(ValidationError):
+            JobRequest()
+
+    def test_playbook_field_removed(self):
+        """Playbook field no longer exists."""
+        with pytest.raises(ValidationError):
+            JobRequest(playbook="hello.yml")
