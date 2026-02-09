@@ -1,11 +1,13 @@
 # Ansible Runner Service
 
-REST API for running Ansible playbooks via FastAPI + Redis + MariaDB.
+REST API for running Ansible playbooks and roles via FastAPI + Redis + MariaDB.
 
 ## Features
 
-- **Sync and async execution** - Run local playbooks immediately (`?sync=true`) or queue for background processing
-- **Git-based sources** - Execute playbooks and roles directly from Git repositories
+- **Unified source field** - Single API for local and git-based playbooks/roles
+- **Sync and async execution** - Local sources run immediately (`?sync=true`) or queued; git sources always async
+- **Bundled content support** - Run playbooks/roles baked into container images (Kubernetes-ready)
+- **Git-based sources** - Execute playbooks and roles from Azure DevOps, GitLab, or other Git providers
 - **Structured inventory** - Pass Ansible YAML inventory as JSON or fetch from Git
 - **Execution options** - Support for check mode, diff, tags, limit, verbosity
 - **Job persistence** - Jobs stored in MariaDB with Redis caching for fast access
@@ -36,7 +38,24 @@ rq worker
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
   -H "Content-Type: application/json" \
-  -d '{"playbook": "hello.yml"}'
+  -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
+```
+
+### Run a local role from bundled collection (sync)
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "type": "local",
+      "target": "role",
+      "collection": "mycompany.infra",
+      "role": "nginx",
+      "role_vars": {"port": 8080}
+    },
+    "inventory": "webservers,"
+  }'
 ```
 
 ### Submit async job with options
@@ -45,21 +64,22 @@ curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
-    "playbook": "deploy.yml",
+    "source": {"type": "local", "target": "playbook", "path": "deploy.yml"},
     "extra_vars": {"env": "prod"},
     "inventory": {"type": "inline", "data": {"webservers": {"hosts": {"10.0.1.10": null}}}},
     "options": {"check": true, "diff": true, "tags": ["deploy"]}
   }'
 ```
 
-### Run playbook from Git
+### Run playbook from Git (async)
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs" \
   -H "Content-Type: application/json" \
   -d '{
     "source": {
-      "type": "playbook",
+      "type": "git",
+      "target": "playbook",
       "repo": "https://dev.azure.com/org/project/_git/ansible-playbooks",
       "path": "deploy/app.yml"
     },
@@ -67,15 +87,39 @@ curl -X POST "http://localhost:8000/api/v1/jobs" \
   }'
 ```
 
+### Run role from Git collection (async)
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "type": "git",
+      "target": "role",
+      "repo": "https://gitlab.company.com/team/ansible-collection.git",
+      "role": "nginx"
+    },
+    "inventory": "webservers,"
+  }'
+```
+
 ## Job Request Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `playbook` | string | Local playbook name (required if no `source`) |
-| `source` | object | Git source config (required if no `playbook`) |
+| `source` | object | **Required.** Source definition (see below) |
 | `extra_vars` | object | Variables passed to playbook |
 | `inventory` | string or object | Host list, inline YAML, or git reference |
 | `options` | object | Execution options (check, diff, tags, etc.) |
+
+### Source Types
+
+| Type | Target | Fields |
+|------|--------|--------|
+| `local` | `playbook` | `path` |
+| `local` | `role` | `collection`, `role`, `role_vars` (optional) |
+| `git` | `playbook` | `repo`, `branch` (optional), `path` |
+| `git` | `role` | `repo`, `branch` (optional), `role`, `role_vars` (optional) |
 
 ## Documentation
 
