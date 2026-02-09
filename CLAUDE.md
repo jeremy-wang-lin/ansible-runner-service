@@ -41,19 +41,25 @@ When finishing a branch:
 
 **IMPORTANT: Update these files when finishing any branch that changes API, schemas, or architecture:**
 
-1. **`docs/usage-guide.md`** - Update if:
+1. **`README.md`** - Update if:
+   - Features list changes
+   - API examples need updating
+   - Quick start instructions change
+
+2. **`docs/usage-guide.md`** - Update if:
    - API request/response format changes
    - New endpoints or fields added
    - Sync/async behavior changes
    - New source types, inventory types, or options added
 
-2. **`docs/code-structure.html`** - Update if:
+3. **`docs/code-structure.html`** - Update if:
    - Architecture or data flow changes
    - New modules, classes, or significant functions added
    - Schema structure changes (e.g., discriminators, field relationships)
 
 **Checklist before merge/PR:**
 - [ ] Tests pass
+- [ ] `README.md` reflects current features and API examples
 - [ ] `docs/usage-guide.md` reflects current API
 - [ ] `docs/code-structure.html` reflects current architecture
 
