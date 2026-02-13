@@ -414,3 +414,9 @@ def get_job(
         result=result,
         error=db_job.error,
     )
+
+
+@app.get("/health/live")
+async def health_live():
+    """Liveness probe - returns ok if process is running."""
+    return {"status": "ok"}
