@@ -4,6 +4,7 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, MagicMock
 
 from ansible_runner_service.main import app
+from ansible_runner_service.health import get_worker_info, get_version_info
 
 
 @pytest.fixture
@@ -53,3 +54,25 @@ class TestHealthReady:
         data = response.json()
         assert data["status"] == "error"
         assert "mariadb" in data["reason"]
+
+
+class TestHealthHelpers:
+    def test_get_worker_info(self):
+        """Get worker count and queues from Redis."""
+        mock_redis = MagicMock()
+        mock_redis.smembers.return_value = {b"rq:worker:worker1", b"rq:worker:worker2"}
+        mock_redis.keys.return_value = [b"rq:queue:default", b"rq:queue:high"]
+
+        info = get_worker_info(mock_redis)
+
+        assert info["count"] == 2
+        assert "default" in info["queues"]
+        assert "high" in info["queues"]
+
+    def test_get_version_info(self):
+        """Get app and ansible versions."""
+        info = get_version_info()
+
+        assert "app" in info
+        assert "ansible_core" in info
+        assert "python" in info
