@@ -37,6 +37,8 @@ from ansible_runner_service.schemas import (
 from ansible_runner_service.git_service import generate_role_wrapper_playbook
 from ansible_runner_service.repository import JobRepository
 from ansible_runner_service.database import get_engine, get_session
+from sqlalchemy.orm import Session
+from ansible_runner_service.health import check_redis, check_mariadb
 
 # Engine singleton for connection reuse
 _engine = None
@@ -125,6 +127,13 @@ def get_repository():
         yield JobRepository(session)
     finally:
         session.close()
+
+
+def get_db_session():
+    """Get a database session for health checks."""
+    engine = get_engine_singleton()
+    with Session(engine) as session:
+        yield session
 
 
 @app.post(
@@ -420,3 +429,27 @@ def get_job(
 async def health_live():
     """Liveness probe - returns ok if process is running."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready(
+    redis: Redis = Depends(get_redis),
+    session: Session = Depends(get_db_session),
+):
+    """Readiness probe - returns ok if Redis and MariaDB are reachable."""
+    redis_ok, _ = check_redis(redis)
+    mariadb_ok, _ = check_mariadb(session)
+
+    if redis_ok and mariadb_ok:
+        return {"status": "ok"}
+
+    reasons = []
+    if not redis_ok:
+        reasons.append("redis unreachable")
+    if not mariadb_ok:
+        reasons.append("mariadb unreachable")
+
+    return JSONResponse(
+        status_code=503,
+        content={"status": "error", "reason": ", ".join(reasons)}
+    )
