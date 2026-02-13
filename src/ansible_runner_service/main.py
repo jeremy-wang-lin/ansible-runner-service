@@ -38,7 +38,14 @@ from ansible_runner_service.git_service import generate_role_wrapper_playbook
 from ansible_runner_service.repository import JobRepository
 from ansible_runner_service.database import get_engine, get_session
 from sqlalchemy.orm import Session
-from ansible_runner_service.health import check_redis, check_mariadb
+from ansible_runner_service.health import (
+    check_redis,
+    check_mariadb,
+    get_worker_info,
+    get_version_info,
+    get_queue_depth,
+    get_jobs_last_hour,
+)
 
 # Engine singleton for connection reuse
 _engine = None
@@ -453,3 +460,35 @@ async def health_ready(
         status_code=503,
         content={"status": "error", "reason": ", ".join(reasons)}
     )
+
+
+@app.get("/health/details")
+async def health_details(
+    redis: Redis = Depends(get_redis),
+    session: Session = Depends(get_db_session),
+):
+    """Full health details for debugging and observability."""
+    redis_ok, redis_latency = check_redis(redis)
+    mariadb_ok, mariadb_latency = check_mariadb(session)
+
+    overall_status = "ok" if (redis_ok and mariadb_ok) else "error"
+
+    return {
+        "status": overall_status,
+        "dependencies": {
+            "redis": {
+                "status": "ok" if redis_ok else "error",
+                "latency_ms": redis_latency
+            },
+            "mariadb": {
+                "status": "ok" if mariadb_ok else "error",
+                "latency_ms": mariadb_latency
+            }
+        },
+        "workers": get_worker_info(redis),
+        "metrics": {
+            "queue_depth": get_queue_depth(redis),
+            "jobs_last_hour": get_jobs_last_hour(session) if mariadb_ok else 0
+        },
+        "version": get_version_info()
+    }

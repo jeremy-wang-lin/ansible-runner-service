@@ -3,6 +3,7 @@ import importlib.metadata
 import platform
 import subprocess
 import time
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -69,3 +70,23 @@ def get_version_info() -> dict:
         "ansible_core": ansible_version,
         "python": platform.python_version()
     }
+
+
+def get_queue_depth(redis_client) -> int:
+    """Get total number of jobs in all queues."""
+    try:
+        queue_keys = redis_client.keys("rq:queue:*")
+        total = 0
+        for key in queue_keys or []:
+            total += redis_client.llen(key)
+        return total
+    except Exception:
+        return 0
+
+
+def get_jobs_last_hour(session) -> int:
+    """Get count of jobs created in the last hour."""
+    from ansible_runner_service.repository import JobRepository
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    repo = JobRepository(session)
+    return repo.count_jobs_since(one_hour_ago)
