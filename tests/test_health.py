@@ -31,3 +31,25 @@ class TestHealthReady:
 
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+
+    async def test_health_ready_redis_down(self, client: AsyncClient):
+        """Returns 503 when Redis is unreachable."""
+        with patch("ansible_runner_service.main.check_redis", return_value=(False, 0)):
+            with patch("ansible_runner_service.main.check_mariadb", return_value=(True, 5)):
+                response = await client.get("/health/ready")
+
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "error"
+        assert "redis" in data["reason"]
+
+    async def test_health_ready_mariadb_down(self, client: AsyncClient):
+        """Returns 503 when MariaDB is unreachable."""
+        with patch("ansible_runner_service.main.check_redis", return_value=(True, 5)):
+            with patch("ansible_runner_service.main.check_mariadb", return_value=(False, 0)):
+                response = await client.get("/health/ready")
+
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "error"
+        assert "mariadb" in data["reason"]
