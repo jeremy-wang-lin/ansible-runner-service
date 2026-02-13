@@ -4,6 +4,7 @@ REST API for running Ansible playbooks and roles via FastAPI + Redis + MariaDB.
 
 ## Features
 
+- **Health endpoints** - `/health/live`, `/health/ready`, `/health/details` for Kubernetes probes
 - **Unified source field** - Single API for local and git-based playbooks/roles
 - **Sync and async execution** - Local sources run immediately (`?sync=true`) or queued; git sources always async
 - **Bundled content support** - Run playbooks/roles baked into container images (Kubernetes-ready)
