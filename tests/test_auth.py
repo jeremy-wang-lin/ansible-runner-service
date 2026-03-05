@@ -134,12 +134,12 @@ class TestAuthMiddleware:
 
 class TestAdminCreateClient:
     @pytest.fixture
-    def admin_client(self):
+    def auth_client(self):
         return AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         )
 
-    async def test_create_client_returns_key(self, admin_client: AsyncClient):
+    async def test_create_client_returns_key(self, auth_client: AsyncClient):
         """POST /admin/clients returns the plaintext key once."""
         mock_repo = MagicMock()
         mock_repo.get_by_name.return_value = None
@@ -152,7 +152,7 @@ class TestAdminCreateClient:
         app.dependency_overrides[get_client_repository] = lambda: mock_repo
         try:
             with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
-                response = await admin_client.post(
+                response = await auth_client.post(
                     "/admin/clients",
                     json={"name": "svc-deploy"},
                     headers={"X-API-Key": "admin-secret"},
@@ -165,8 +165,9 @@ class TestAdminCreateClient:
         assert data["name"] == "svc-deploy"
         assert "api_key" in data
         assert len(data["api_key"]) == 64
+        assert "created_at" in data
 
-    async def test_create_duplicate_client_returns_409(self, admin_client: AsyncClient):
+    async def test_create_duplicate_client_returns_409(self, auth_client: AsyncClient):
         """POST /admin/clients returns 409 if name exists."""
         mock_repo = MagicMock()
         mock_repo.get_by_name.return_value = MagicMock()  # client exists
@@ -174,7 +175,7 @@ class TestAdminCreateClient:
         app.dependency_overrides[get_client_repository] = lambda: mock_repo
         try:
             with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
-                response = await admin_client.post(
+                response = await auth_client.post(
                     "/admin/clients",
                     json={"name": "svc-deploy"},
                     headers={"X-API-Key": "admin-secret"},

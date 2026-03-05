@@ -8,6 +8,7 @@ from typing import Union
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from fastapi.responses import JSONResponse
 from redis import Redis
 from starlette.requests import Request
@@ -500,7 +501,10 @@ def create_client(
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    client = repository.create(request.name, key_hash)
+    try:
+        client = repository.create(request.name, key_hash)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Client already exists")
     reload_client_cache(repository)
 
     return JSONResponse(
