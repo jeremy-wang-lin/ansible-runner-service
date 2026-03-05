@@ -155,6 +155,8 @@ class ClientRepository:
         client = self.get_by_name(name)
         if client is None:
             return False
+        if client.revoked_at is not None:
+            return False
         client.revoked_at = datetime.now(timezone.utc)
         self.session.commit()
         return True

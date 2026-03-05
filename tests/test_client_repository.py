@@ -60,6 +60,16 @@ class TestClientRepository:
         assert result is True
         assert repo.get_by_name("svc-deploy").revoked_at is not None
 
+    def test_revoke_already_revoked_returns_false(self, session: Session):
+        repo = ClientRepository(session)
+        repo.create("svc-deploy", "abc123hash")
+        repo.revoke("svc-deploy")
+        original_revoked_at = repo.get_by_name("svc-deploy").revoked_at
+
+        result = repo.revoke("svc-deploy")
+        assert result is False
+        assert repo.get_by_name("svc-deploy").revoked_at == original_revoked_at
+
     def test_revoke_nonexistent_returns_false(self, session: Session):
         repo = ClientRepository(session)
         result = repo.revoke("nonexistent")
