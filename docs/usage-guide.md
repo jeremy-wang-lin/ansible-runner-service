@@ -71,7 +71,7 @@ API key authentication protects the service endpoints. An admin bootstrap key is
 | Zone | Endpoints | Authentication |
 |------|-----------|----------------|
 | No auth | `/health/*` | None required (liveness/readiness probes) |
-| Admin auth | `/admin/*` | `X-Admin-Key` header with the `ADMIN_API_KEY` value |
+| Admin auth | `/admin/*` | `X-API-Key` header with the `ADMIN_API_KEY` value |
 | Client auth | `/api/v1/*` | `X-API-Key` header with a valid client key |
 
 ### Environment Variables
@@ -88,7 +88,7 @@ Use the admin key to create a new client. The plaintext API key is returned **on
 ```bash
 curl -X POST "http://localhost:8000/admin/clients" \
   -H "Content-Type: application/json" \
-  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -H "X-API-Key: $ADMIN_API_KEY" \
   -d '{"name": "my-app"}'
 ```
 
@@ -96,7 +96,8 @@ Response (201 Created):
 ```json
 {
   "name": "my-app",
-  "api_key": "ars_abc123..."
+  "api_key": "a1b2c3d4e5f6...",
+  "created_at": "2026-03-01T10:00:00+00:00"
 }
 ```
 
@@ -134,8 +135,7 @@ curl -X DELETE -H "X-Admin-Key: $ADMIN_API_KEY" \
 Response (200 OK):
 ```json
 {
-  "name": "my-app",
-  "revoked": true
+  "status": "revoked"
 }
 ```
 
@@ -146,14 +146,14 @@ All `/api/v1/*` endpoints require a valid client API key in the `X-API-Key` head
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: ars_abc123..." \
+  -H "X-API-Key: <client-api-key>" \
   -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
 ```
 
 Requests without a valid key receive a `401 Unauthorized` response:
 ```json
 {
-  "detail": "Invalid or missing API key"
+  "detail": "Missing API key"
 }
 ```
 
@@ -692,12 +692,16 @@ docker-compose exec mariadb mariadb -uroot -pdevpassword ansible_runner \
 │   ├── queue.py                # rq job enqueueing
 │   ├── worker.py               # Worker job execution
 │   ├── database.py             # SQLAlchemy engine and session
-│   ├── models.py               # ORM models (JobModel)
-│   ├── repository.py           # Database CRUD operations
+│   ├── auth.py                 # Authentication config (key hashing, generation)
+│   ├── models.py               # ORM models (JobModel, ClientModel)
+│   ├── repository.py           # Database CRUD operations (JobRepository, ClientRepository)
 │   ├── git_config.py           # Git provider configuration and URL validation
 │   └── git_service.py          # Git clone, collection install, FQCN resolution
 └── tests/
+    ├── conftest.py             # Test configuration (disables auth by default)
     ├── test_api.py             # API endpoint tests
+    ├── test_auth.py            # Authentication tests (middleware, admin endpoints)
+    ├── test_client_repository.py # Client repository tests
     ├── test_integration.py     # Full flow + E2E tests (require Redis + worker)
     ├── test_db_integration.py  # Database integration tests (require MariaDB)
     ├── test_queue_integration.py # Queue integration tests (require Redis)

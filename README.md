@@ -118,7 +118,7 @@ Use the admin API key to create a client. The plaintext key is returned once:
 ```bash
 curl -X POST "http://localhost:8000/admin/clients" \
   -H "Content-Type: application/json" \
-  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -H "X-API-Key: $ADMIN_API_KEY" \
   -d '{"name": "my-app"}'
 ```
 
@@ -129,7 +129,7 @@ Pass the client key in the `X-API-Key` header:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: ars_..." \
+  -H "X-API-Key: <client-api-key>" \
   -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
 ```
 
@@ -137,10 +137,10 @@ curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
 
 ```bash
 # List all clients
-curl -H "X-Admin-Key: $ADMIN_API_KEY" "http://localhost:8000/admin/clients"
+curl -H "X-API-Key: $ADMIN_API_KEY" "http://localhost:8000/admin/clients"
 
 # Revoke a client
-curl -X DELETE -H "X-Admin-Key: $ADMIN_API_KEY" \
+curl -X DELETE -H "X-API-Key: $ADMIN_API_KEY" \
   "http://localhost:8000/admin/clients/my-app"
 ```
 
