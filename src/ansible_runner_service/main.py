@@ -515,3 +515,32 @@ def create_client(
             created_at=client.created_at.isoformat(),
         ).model_dump(),
     )
+
+
+@app.get("/admin/clients")
+def list_clients(
+    repository: ClientRepository = Depends(get_client_repository),
+):
+    """List all API clients."""
+    clients = repository.list_all()
+    return [
+        ClientSummary(
+            name=c.name,
+            created_at=c.created_at.isoformat(),
+            revoked_at=c.revoked_at.isoformat() if c.revoked_at else None,
+        ).model_dump()
+        for c in clients
+    ]
+
+
+@app.delete("/admin/clients/{name}")
+def revoke_client(
+    name: str,
+    repository: ClientRepository = Depends(get_client_repository),
+):
+    """Revoke an API client."""
+    if not repository.revoke(name):
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    reload_client_cache(repository)
+    return {"status": "revoked"}

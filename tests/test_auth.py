@@ -103,14 +103,19 @@ class TestAuthMiddleware:
 
     async def test_admin_endpoint_accepts_admin_key(self, auth_client: AsyncClient):
         """Admin endpoints should accept ADMIN_API_KEY."""
-        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
-            response = await auth_client.get(
-                "/admin/clients",
-                headers={"X-API-Key": "admin-secret"},
-            )
-            # May return 404/405 since admin endpoints aren't implemented yet,
-            # but should NOT return 401
-            assert response.status_code != 401
+        mock_repo = MagicMock()
+        mock_repo.list_all.return_value = []
+
+        app.dependency_overrides[get_client_repository] = lambda: mock_repo
+        try:
+            with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+                response = await auth_client.get(
+                    "/admin/clients",
+                    headers={"X-API-Key": "admin-secret"},
+                )
+                assert response.status_code != 401
+        finally:
+            app.dependency_overrides.clear()
 
     async def test_api_passes_with_valid_client_key(self, auth_client: AsyncClient):
         """API endpoints should accept valid client keys."""
@@ -184,3 +189,73 @@ class TestAdminCreateClient:
             app.dependency_overrides.clear()
 
         assert response.status_code == 409
+
+
+class TestAdminListAndRevoke:
+    @pytest.fixture
+    def auth_client(self):
+        return AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+
+    async def test_list_clients(self, auth_client: AsyncClient):
+        """GET /admin/clients lists all clients."""
+        mock_client_a = MagicMock()
+        mock_client_a.name = "svc-a"
+        mock_client_a.created_at = datetime(2026, 2, 27, tzinfo=timezone.utc)
+        mock_client_a.revoked_at = None
+
+        mock_repo = MagicMock()
+        mock_repo.list_all.return_value = [mock_client_a]
+
+        app.dependency_overrides[get_client_repository] = lambda: mock_repo
+        try:
+            with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+                response = await auth_client.get(
+                    "/admin/clients",
+                    headers={"X-API-Key": "admin-secret"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "svc-a"
+        assert "api_key_hash" not in data[0]
+
+    async def test_revoke_client(self, auth_client: AsyncClient):
+        """DELETE /admin/clients/{name} revokes the client."""
+        mock_repo = MagicMock()
+        mock_repo.revoke.return_value = True
+        mock_repo.get_all_active_key_hashes.return_value = {}
+
+        app.dependency_overrides[get_client_repository] = lambda: mock_repo
+        try:
+            with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+                response = await auth_client.delete(
+                    "/admin/clients/svc-deploy",
+                    headers={"X-API-Key": "admin-secret"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "revoked"
+
+    async def test_revoke_nonexistent_returns_404(self, auth_client: AsyncClient):
+        """DELETE /admin/clients/{name} returns 404 if not found."""
+        mock_repo = MagicMock()
+        mock_repo.revoke.return_value = False
+
+        app.dependency_overrides[get_client_repository] = lambda: mock_repo
+        try:
+            with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+                response = await auth_client.delete(
+                    "/admin/clients/nonexistent",
+                    headers={"X-API-Key": "admin-secret"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 404
