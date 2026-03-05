@@ -1,5 +1,10 @@
 import hashlib
-from unittest.mock import patch
+import pytest
+from unittest.mock import patch, MagicMock
+
+from httpx import AsyncClient, ASGITransport
+
+from ansible_runner_service.main import app, get_repository
 
 
 class TestAuthConfig:
@@ -37,3 +42,90 @@ class TestAuthConfig:
         from ansible_runner_service.auth import generate_api_key
         key = generate_api_key()
         assert len(key) == 64  # 32 bytes = 64 hex chars
+
+
+class TestAuthMiddleware:
+    @pytest.fixture
+    def auth_client(self):
+        return AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+
+    async def test_health_endpoints_exempt(self, auth_client: AsyncClient):
+        """Health endpoints should not require authentication."""
+        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin"}):
+            response = await auth_client.get("/health/live")
+            # /health/live may not exist yet (returns 404), but must NOT return 401
+            assert response.status_code != 401
+
+    async def test_api_returns_401_without_key(self, auth_client: AsyncClient):
+        """API endpoints should return 401 without X-API-Key header."""
+        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin"}):
+            response = await auth_client.get("/api/v1/jobs")
+            assert response.status_code == 401
+            assert response.json()["detail"] == "Missing API key"
+
+    async def test_api_returns_401_with_invalid_key(self, auth_client: AsyncClient):
+        """API endpoints should return 401 with an invalid key."""
+        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin"}):
+            with patch("ansible_runner_service.main.get_client_cache", return_value={}):
+                response = await auth_client.get(
+                    "/api/v1/jobs",
+                    headers={"X-API-Key": "invalid-key"},
+                )
+                assert response.status_code == 401
+                assert response.json()["detail"] == "Invalid API key"
+
+    async def test_auth_disabled_passes_all_requests(self, auth_client: AsyncClient):
+        """When AUTH_ENABLED=false, all requests pass without key."""
+        with patch.dict("os.environ", {"AUTH_ENABLED": "false"}):
+            mock_repo_instance = MagicMock()
+            mock_repo_instance.list_jobs.return_value = ([], 0)
+            app.dependency_overrides[get_repository] = lambda: mock_repo_instance
+            try:
+                response = await auth_client.get("/api/v1/jobs")
+            finally:
+                app.dependency_overrides.clear()
+            assert response.status_code == 200
+
+    async def test_admin_endpoint_requires_admin_key(self, auth_client: AsyncClient):
+        """Admin endpoints should reject client keys."""
+        client_key = "client-key-123"
+        client_hash = hashlib.sha256(client_key.encode()).hexdigest()
+        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+            with patch("ansible_runner_service.main.get_client_cache", return_value={client_hash: "svc-a"}):
+                response = await auth_client.get(
+                    "/admin/clients",
+                    headers={"X-API-Key": client_key},
+                )
+                assert response.status_code == 401
+
+    async def test_admin_endpoint_accepts_admin_key(self, auth_client: AsyncClient):
+        """Admin endpoints should accept ADMIN_API_KEY."""
+        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+            response = await auth_client.get(
+                "/admin/clients",
+                headers={"X-API-Key": "admin-secret"},
+            )
+            # May return 404/405 since admin endpoints aren't implemented yet,
+            # but should NOT return 401
+            assert response.status_code != 401
+
+    async def test_api_passes_with_valid_client_key(self, auth_client: AsyncClient):
+        """API endpoints should accept valid client keys."""
+        client_key = "valid-client-key"
+        client_hash = hashlib.sha256(client_key.encode()).hexdigest()
+        with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin"}):
+            with patch("ansible_runner_service.main.get_client_cache",
+                       return_value={client_hash: "svc-deploy"}):
+                mock_repo = MagicMock()
+                mock_repo.list_jobs.return_value = ([], 0)
+                app.dependency_overrides[get_repository] = lambda: mock_repo
+                try:
+                    response = await auth_client.get(
+                        "/api/v1/jobs",
+                        headers={"X-API-Key": client_key},
+                    )
+                finally:
+                    app.dependency_overrides.clear()
+                assert response.status_code == 200

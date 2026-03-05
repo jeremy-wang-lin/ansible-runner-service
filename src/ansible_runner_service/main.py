@@ -1,4 +1,5 @@
 # src/ansible_runner_service/main.py
+import hmac
 import os
 import tempfile
 from contextlib import asynccontextmanager
@@ -9,6 +10,8 @@ import yaml
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from redis import Redis
+from starlette.requests import Request
+from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from ansible_runner_service.git_config import load_providers, validate_repo_url
 from ansible_runner_service.job_store import JobStore
@@ -34,8 +37,9 @@ from ansible_runner_service.schemas import (
     GitRoleSourceConfig,
     UnifiedSourceConfig,
 )
+from ansible_runner_service.auth import hash_api_key, get_admin_key_hash, is_auth_enabled
 from ansible_runner_service.git_service import generate_role_wrapper_playbook
-from ansible_runner_service.repository import JobRepository
+from ansible_runner_service.repository import JobRepository, ClientRepository
 from ansible_runner_service.database import get_engine, get_session
 
 # Engine singleton for connection reuse
@@ -67,6 +71,18 @@ def recover_stale_jobs(repository: JobRepository, redis: Redis) -> None:
             )
 
 
+_client_cache: dict[str, str] = {}  # key_hash -> client_name
+
+
+def get_client_cache() -> dict[str, str]:
+    return _client_cache
+
+
+def reload_client_cache(repository: ClientRepository) -> None:
+    global _client_cache
+    _client_cache = repository.get_all_active_key_hashes()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
@@ -79,6 +95,8 @@ async def lifespan(app: FastAPI):
             repository = JobRepository(session)
             redis = get_redis()
             recover_stale_jobs(repository, redis)
+            client_repo = ClientRepository(session)
+            reload_client_cache(client_repo)
         finally:
             session.close()
     except Exception:
@@ -90,6 +108,47 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ansible Runner Service", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not is_auth_enabled():
+        return await call_next(request)
+
+    path = request.url.path
+
+    # Health endpoints and docs are exempt
+    if path.startswith("/health") or path in ("/docs", "/openapi.json", "/redoc"):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        return StarletteJSONResponse(
+            status_code=401,
+            content={"detail": "Missing API key"},
+        )
+
+    key_hash = hash_api_key(api_key)
+
+    # Admin endpoints require ADMIN_API_KEY
+    if path.startswith("/admin"):
+        admin_hash = get_admin_key_hash()
+        if admin_hash is None or not hmac.compare_digest(key_hash, admin_hash):
+            return StarletteJSONResponse(
+                status_code=401,
+                content={"detail": "Invalid API key"},
+            )
+        return await call_next(request)
+
+    # API endpoints require valid client key
+    cache = get_client_cache()
+    if key_hash not in cache:
+        return StarletteJSONResponse(
+            status_code=401,
+            content={"detail": "Invalid API key"},
+        )
+
+    return await call_next(request)
 
 
 PLAYBOOKS_DIR = Path(__file__).parent.parent.parent / "playbooks"
