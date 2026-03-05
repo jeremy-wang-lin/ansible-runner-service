@@ -11,6 +11,7 @@ REST API for running Ansible playbooks and roles via FastAPI + Redis + MariaDB.
 - **Structured inventory** - Pass Ansible YAML inventory as JSON or fetch from Git
 - **Execution options** - Support for check mode, diff, tags, limit, verbosity
 - **Job persistence** - Jobs stored in MariaDB with Redis caching for fast access
+- **API key authentication** - Per-client API keys with admin management endpoints
 - **Provider allowlist** - Restrict Git sources to approved hosts and organizations
 
 ## Quick Start
@@ -22,6 +23,9 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 docker-compose up -d
 alembic upgrade head
+
+# Set admin API key for authentication
+export ADMIN_API_KEY=your-secret-admin-key
 
 # Start API server
 uvicorn ansible_runner_service.main:app --reload
@@ -102,6 +106,45 @@ curl -X POST "http://localhost:8000/api/v1/jobs" \
     "inventory": "webservers,"
   }'
 ```
+
+## Authentication
+
+API endpoints are protected by API key authentication. Health endpoints (`/health/*`) require no authentication.
+
+### Create a client
+
+Use the admin API key to create a client. The plaintext key is returned once:
+
+```bash
+curl -X POST "http://localhost:8000/admin/clients" \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -d '{"name": "my-app"}'
+```
+
+### Use the client key
+
+Pass the client key in the `X-API-Key` header:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ars_..." \
+  -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
+```
+
+### List and revoke clients
+
+```bash
+# List all clients
+curl -H "X-Admin-Key: $ADMIN_API_KEY" "http://localhost:8000/admin/clients"
+
+# Revoke a client
+curl -X DELETE -H "X-Admin-Key: $ADMIN_API_KEY" \
+  "http://localhost:8000/admin/clients/my-app"
+```
+
+To disable authentication for development, set `AUTH_ENABLED=false`. See [docs/usage-guide.md](docs/usage-guide.md) for full details.
 
 ## Job Request Fields
 
