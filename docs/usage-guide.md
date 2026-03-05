@@ -108,7 +108,7 @@ Save the `api_key` value securely. It cannot be retrieved again.
 List all registered clients (active and revoked):
 
 ```bash
-curl -H "X-Admin-Key: $ADMIN_API_KEY" \
+curl -H "X-API-Key: $ADMIN_API_KEY" \
   "http://localhost:8000/admin/clients"
 ```
 
@@ -128,7 +128,7 @@ Response (200 OK):
 Revoke a client's API key so it can no longer authenticate:
 
 ```bash
-curl -X DELETE -H "X-Admin-Key: $ADMIN_API_KEY" \
+curl -X DELETE -H "X-API-Key: $ADMIN_API_KEY" \
   "http://localhost:8000/admin/clients/my-app"
 ```
 
