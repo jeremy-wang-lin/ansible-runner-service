@@ -1,10 +1,11 @@
 import hashlib
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 from httpx import AsyncClient, ASGITransport
 
-from ansible_runner_service.main import app, get_repository
+from ansible_runner_service.main import app, get_repository, get_client_repository
 
 
 class TestAuthConfig:
@@ -129,3 +130,56 @@ class TestAuthMiddleware:
                 finally:
                     app.dependency_overrides.clear()
                 assert response.status_code == 200
+
+
+class TestAdminCreateClient:
+    @pytest.fixture
+    def admin_client(self):
+        return AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        )
+
+    async def test_create_client_returns_key(self, admin_client: AsyncClient):
+        """POST /admin/clients returns the plaintext key once."""
+        mock_repo = MagicMock()
+        mock_repo.get_by_name.return_value = None
+        mock_client = MagicMock()
+        mock_client.name = "svc-deploy"
+        mock_client.created_at = datetime(2026, 2, 27, tzinfo=timezone.utc)
+        mock_repo.create.return_value = mock_client
+        mock_repo.get_all_active_key_hashes.return_value = {}
+
+        app.dependency_overrides[get_client_repository] = lambda: mock_repo
+        try:
+            with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+                response = await admin_client.post(
+                    "/admin/clients",
+                    json={"name": "svc-deploy"},
+                    headers={"X-API-Key": "admin-secret"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["name"] == "svc-deploy"
+        assert "api_key" in data
+        assert len(data["api_key"]) == 64
+
+    async def test_create_duplicate_client_returns_409(self, admin_client: AsyncClient):
+        """POST /admin/clients returns 409 if name exists."""
+        mock_repo = MagicMock()
+        mock_repo.get_by_name.return_value = MagicMock()  # client exists
+
+        app.dependency_overrides[get_client_repository] = lambda: mock_repo
+        try:
+            with patch.dict("os.environ", {"AUTH_ENABLED": "true", "ADMIN_API_KEY": "admin-secret"}):
+                response = await admin_client.post(
+                    "/admin/clients",
+                    json={"name": "svc-deploy"},
+                    headers={"X-API-Key": "admin-secret"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 409

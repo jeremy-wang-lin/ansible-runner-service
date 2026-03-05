@@ -36,8 +36,11 @@ from ansible_runner_service.schemas import (
     GitPlaybookSourceConfig,
     GitRoleSourceConfig,
     UnifiedSourceConfig,
+    CreateClientRequest,
+    CreateClientResponse,
+    ClientSummary,
 )
-from ansible_runner_service.auth import hash_api_key, get_admin_key_hash, is_auth_enabled
+from ansible_runner_service.auth import hash_api_key, get_admin_key_hash, is_auth_enabled, generate_api_key
 from ansible_runner_service.git_service import generate_role_wrapper_playbook
 from ansible_runner_service.repository import JobRepository, ClientRepository
 from ansible_runner_service.database import get_engine, get_session
@@ -182,6 +185,17 @@ def get_repository():
     session = Session()
     try:
         yield JobRepository(session)
+    finally:
+        session.close()
+
+
+def get_client_repository():
+    """Dependency that provides a ClientRepository."""
+    engine = get_engine_singleton()
+    Session = get_session(engine)
+    session = Session()
+    try:
+        yield ClientRepository(session)
     finally:
         session.close()
 
@@ -472,4 +486,28 @@ def get_job(
         finished_at=db_job.finished_at.isoformat() if db_job.finished_at else None,
         result=result,
         error=db_job.error,
+    )
+
+
+@app.post("/admin/clients", response_model=CreateClientResponse, status_code=201)
+def create_client(
+    request: CreateClientRequest,
+    repository: ClientRepository = Depends(get_client_repository),
+):
+    """Create a new API client. Returns the plaintext key once."""
+    if repository.get_by_name(request.name):
+        raise HTTPException(status_code=409, detail="Client already exists")
+
+    api_key = generate_api_key()
+    key_hash = hash_api_key(api_key)
+    client = repository.create(request.name, key_hash)
+    reload_client_cache(repository)
+
+    return JSONResponse(
+        status_code=201,
+        content=CreateClientResponse(
+            name=client.name,
+            api_key=api_key,
+            created_at=client.created_at.isoformat(),
+        ).model_dump(),
     )
