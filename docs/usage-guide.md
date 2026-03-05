@@ -62,6 +62,124 @@ source .venv/bin/activate
 rq worker --url redis://localhost:6379
 ```
 
+## Authentication
+
+API key authentication protects the service endpoints. An admin bootstrap key is used to manage per-client API keys stored in MariaDB.
+
+### Auth Zones
+
+| Zone | Endpoints | Authentication |
+|------|-----------|----------------|
+| No auth | `/health/*` | None required (liveness/readiness probes) |
+| Admin auth | `/admin/*` | `X-API-Key` header with the `ADMIN_API_KEY` value |
+| Client auth | `/api/v1/*` | `X-API-Key` header with a valid client key |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADMIN_API_KEY` | *(required)* | Bootstrap admin key for managing clients |
+| `AUTH_ENABLED` | `true` | Set to `false` to disable all authentication (for development/testing) |
+
+### Creating a Client
+
+Use the admin key to create a new client. The plaintext API key is returned **only once** in the response:
+
+```bash
+curl -X POST "http://localhost:8000/admin/clients" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $ADMIN_API_KEY" \
+  -d '{"name": "my-app"}'
+```
+
+Response (201 Created):
+```json
+{
+  "name": "my-app",
+  "api_key": "a1b2c3d4e5f6...",
+  "created_at": "2026-03-01T10:00:00+00:00"
+}
+```
+
+Save the `api_key` value securely. It cannot be retrieved again.
+
+### Listing Clients
+
+List all registered clients (active and revoked):
+
+```bash
+curl -H "X-API-Key: $ADMIN_API_KEY" \
+  "http://localhost:8000/admin/clients"
+```
+
+Response (200 OK):
+```json
+[
+  {
+    "name": "my-app",
+    "created_at": "2026-03-01T10:00:00+00:00",
+    "revoked_at": null
+  }
+]
+```
+
+### Revoking a Client
+
+Revoke a client's API key so it can no longer authenticate:
+
+```bash
+curl -X DELETE -H "X-API-Key: $ADMIN_API_KEY" \
+  "http://localhost:8000/admin/clients/my-app"
+```
+
+Response (200 OK):
+```json
+{
+  "status": "revoked"
+}
+```
+
+### Using a Client API Key
+
+All `/api/v1/*` endpoints require a valid client API key in the `X-API-Key` header:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/jobs?sync=true" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <client-api-key>" \
+  -d '{"source": {"type": "local", "target": "playbook", "path": "hello.yml"}}'
+```
+
+Requests without a valid key receive a `401 Unauthorized` response:
+```json
+{
+  "detail": "Missing API key"
+}
+```
+
+### Exempt Endpoints
+
+Health check endpoints require no authentication and are always accessible:
+
+```bash
+# Liveness probe
+curl "http://localhost:8000/health/live"
+
+# Readiness probe
+curl "http://localhost:8000/health/ready"
+```
+
+### Disabling Authentication
+
+For development and testing, disable authentication entirely:
+
+```bash
+export AUTH_ENABLED=false
+uvicorn ansible_runner_service.main:app --reload
+```
+
+When disabled, all endpoints are accessible without API keys.
+
 ## API Usage
 
 ### Sync Mode (Immediate Execution)
@@ -574,12 +692,16 @@ docker-compose exec mariadb mariadb -uroot -pdevpassword ansible_runner \
 │   ├── queue.py                # rq job enqueueing
 │   ├── worker.py               # Worker job execution
 │   ├── database.py             # SQLAlchemy engine and session
-│   ├── models.py               # ORM models (JobModel)
-│   ├── repository.py           # Database CRUD operations
+│   ├── auth.py                 # Authentication config (key hashing, generation)
+│   ├── models.py               # ORM models (JobModel, ClientModel)
+│   ├── repository.py           # Database CRUD operations (JobRepository, ClientRepository)
 │   ├── git_config.py           # Git provider configuration and URL validation
 │   └── git_service.py          # Git clone, collection install, FQCN resolution
 └── tests/
+    ├── conftest.py             # Test configuration (disables auth by default)
     ├── test_api.py             # API endpoint tests
+    ├── test_auth.py            # Authentication tests (middleware, admin endpoints)
+    ├── test_client_repository.py # Client repository tests
     ├── test_integration.py     # Full flow + E2E tests (require Redis + worker)
     ├── test_db_integration.py  # Database integration tests (require MariaDB)
     ├── test_queue_integration.py # Queue integration tests (require Redis)

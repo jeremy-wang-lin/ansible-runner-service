@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from ansible_runner_service.models import JobModel
+from ansible_runner_service.models import ClientModel, JobModel
 
 
 class JobRepository:
@@ -118,3 +118,52 @@ class JobRepository:
             .filter(JobModel.started_at < cutoff)
             .all()
         )
+
+
+class ClientRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(self, name: str, api_key_hash: str) -> ClientModel:
+        """Create a new API client."""
+        client = ClientModel(name=name, api_key_hash=api_key_hash)
+        self.session.add(client)
+        self.session.commit()
+        return client
+
+    def get_by_name(self, name: str) -> ClientModel | None:
+        """Get a client by name."""
+        return self.session.query(ClientModel).filter(
+            ClientModel.name == name
+        ).first()
+
+    def get_by_key_hash(self, key_hash: str) -> ClientModel | None:
+        """Get an active (non-revoked) client by API key hash."""
+        return self.session.query(ClientModel).filter(
+            ClientModel.api_key_hash == key_hash,
+            ClientModel.revoked_at.is_(None),
+        ).first()
+
+    def list_all(self) -> list[ClientModel]:
+        """List all clients ordered by creation time."""
+        return self.session.query(ClientModel).order_by(
+            ClientModel.created_at
+        ).all()
+
+    def revoke(self, name: str) -> bool:
+        """Revoke a client by name. Returns True if found and revoked."""
+        client = self.get_by_name(name)
+        if client is None:
+            return False
+        if client.revoked_at is not None:
+            return False
+        client.revoked_at = datetime.now(timezone.utc)
+        self.session.commit()
+        return True
+
+    def get_all_active_key_hashes(self) -> dict[str, str]:
+        """Get a mapping of api_key_hash -> name for all active clients."""
+        clients = self.session.query(ClientModel).filter(
+            ClientModel.revoked_at.is_(None)
+        ).all()
+        return {c.api_key_hash: c.name for c in clients}

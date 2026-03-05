@@ -239,3 +239,19 @@ class JobListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class CreateClientRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class CreateClientResponse(BaseModel):
+    name: str
+    api_key: str
+    created_at: str
+
+
+class ClientSummary(BaseModel):
+    name: str
+    created_at: str
+    revoked_at: str | None
