@@ -23,11 +23,8 @@ class TestHealthLive:
 class TestHealthReady:
     async def test_health_ready_success(self, client: AsyncClient):
         """Returns 200 when Redis and MariaDB are reachable."""
-        mock_redis = MagicMock()
-        mock_redis.ping.return_value = True
-
-        with patch("ansible_runner_service.main.get_redis", return_value=mock_redis):
-            with patch("ansible_runner_service.health.check_mariadb", return_value=(True, 5)):
+        with patch("ansible_runner_service.main.check_redis", return_value=(True, 5)):
+            with patch("ansible_runner_service.main.check_mariadb", return_value=(True, 5)):
                 response = await client.get("/health/ready")
 
         assert response.status_code == 200

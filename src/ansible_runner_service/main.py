@@ -439,7 +439,7 @@ async def health_live():
 
 
 @app.get("/health/ready")
-async def health_ready(
+def health_ready(
     redis: Redis = Depends(get_redis),
     session: Session = Depends(get_db_session),
 ):
@@ -463,7 +463,7 @@ async def health_ready(
 
 
 @app.get("/health/details")
-async def health_details(
+def health_details(
     redis: Redis = Depends(get_redis),
     session: Session = Depends(get_db_session),
 ):
