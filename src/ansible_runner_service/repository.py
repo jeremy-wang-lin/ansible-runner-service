@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from ansible_runner_service.models import JobModel
@@ -118,3 +118,9 @@ class JobRepository:
             .filter(JobModel.started_at < cutoff)
             .all()
         )
+
+    def count_jobs_since(self, since: datetime) -> int:
+        """Count jobs created since a given time."""
+        return self.session.query(func.count(JobModel.id)).filter(
+            JobModel.created_at >= since
+        ).scalar() or 0

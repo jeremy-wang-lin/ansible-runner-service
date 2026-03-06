@@ -64,6 +64,85 @@ rq worker --url redis://localhost:6379
 
 ## API Usage
 
+### Health Endpoints
+
+Three endpoints for Kubernetes probes and observability.
+
+#### Liveness probe
+
+```bash
+curl http://localhost:8000/health/live
+```
+
+Response:
+```json
+{"status": "ok"}
+```
+
+#### Readiness probe
+
+```bash
+curl http://localhost:8000/health/ready
+```
+
+Response (success):
+```json
+{"status": "ok"}
+```
+
+Response (failure - 503):
+```json
+{"status": "error", "reason": "mariadb unreachable"}
+```
+
+#### Detailed health status
+
+```bash
+curl http://localhost:8000/health/details
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "dependencies": {
+    "redis": {"status": "ok", "latency_ms": 2},
+    "mariadb": {"status": "ok", "latency_ms": 5}
+  },
+  "workers": {
+    "count": 3,
+    "queues": ["default"]
+  },
+  "metrics": {
+    "queue_depth": 12,
+    "jobs_last_hour": 47
+  },
+  "version": {
+    "app": "0.1.0",
+    "ansible_core": "2.20.2",
+    "python": "3.11.5"
+  }
+}
+```
+
+#### Kubernetes configuration
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
 ### Sync Mode (Immediate Execution)
 
 Execute a playbook and wait for the result:

@@ -63,6 +63,22 @@ When finishing a branch:
 - [ ] `docs/usage-guide.md` reflects current API
 - [ ] `docs/code-structure.html` reflects current architecture
 
+## Coding Conventions
+
+### FastAPI: `def` vs `async def`
+
+- Use `async def` ONLY when all I/O in the handler is `await`-ed (e.g., async DB drivers, httpx.AsyncClient)
+- Use plain `def` when the handler calls synchronous code (redis-py, SQLAlchemy sync, subprocess, file I/O) — FastAPI auto-offloads `def` handlers to a threadpool
+
+### Testing: Mock patch location
+
+- **Patch where the name is looked up, not where it is defined.** If `main.py` does `from health import check_redis`, patch `ansible_runner_service.main.check_redis`, NOT `ansible_runner_service.health.check_redis`
+- For FastAPI dependencies (`Depends(get_redis)`), prefer `app.dependency_overrides[get_redis]` over `patch()`
+
 ## Worktree Directory
 
 .worktrees
+
+## Subagent Model Preference
+
+Always use **Opus** model when dispatching subagents (implementers, reviewers).

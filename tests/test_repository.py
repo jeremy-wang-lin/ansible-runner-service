@@ -1,6 +1,6 @@
 # tests/test_repository.py
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 
@@ -275,3 +275,24 @@ class TestJobRepository:
         added_job = mock_session.add.call_args[0][0]
         assert added_job.source_type == "local"
         assert added_job.source_target == "role"
+
+
+class TestCountJobsSince:
+    def test_count_jobs_since(self):
+        """Count jobs created since a given time."""
+        from ansible_runner_service.repository import JobRepository
+
+        mock_session = MagicMock()
+        repo = JobRepository(mock_session)
+        now = datetime.now(timezone.utc)
+        one_hour_ago = now - timedelta(hours=1)
+
+        # Mock the query chain
+        mock_query = MagicMock()
+        mock_query.filter.return_value = mock_query
+        mock_query.scalar.return_value = 2
+        mock_session.query.return_value = mock_query
+
+        count = repo.count_jobs_since(one_hour_ago)
+
+        assert count == 2
