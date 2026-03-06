@@ -41,7 +41,7 @@ from ansible_runner_service.schemas import (
     CreateClientResponse,
     ClientSummary,
 )
-from ansible_runner_service.auth import hash_api_key, get_admin_key_hash, is_auth_enabled, generate_api_key
+from ansible_runner_service.auth import API_KEY_HEADER, hash_api_key, get_admin_key_hash, is_auth_enabled, generate_api_key
 from ansible_runner_service.git_service import generate_role_wrapper_playbook
 from ansible_runner_service.repository import JobRepository, ClientRepository
 from ansible_runner_service.database import get_engine, get_session
@@ -125,7 +125,7 @@ async def auth_middleware(request: Request, call_next):
     if path.startswith("/health") or path in ("/docs", "/openapi.json", "/redoc"):
         return await call_next(request)
 
-    api_key = request.headers.get("X-API-Key")
+    api_key = request.headers.get(API_KEY_HEADER)
     if not api_key:
         return StarletteJSONResponse(
             status_code=401,

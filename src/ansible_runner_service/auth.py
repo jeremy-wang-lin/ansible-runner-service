@@ -2,6 +2,8 @@ import hashlib
 import os
 import secrets
 
+API_KEY_HEADER = "X-API-Key"
+
 
 def hash_api_key(key: str) -> str:
     """Hash an API key using SHA-256."""
